@@ -1,0 +1,12 @@
+# Copy this file to terraform.tfvars and replace the placeholders before applying.
+location        = "REPLACE_WITH_AZURE_REGION"
+resource_prefix = "oh"
+
+# These match the endpoint and model currently configured in opencode.json.
+foundry_resource = "ide-copilot-anhdoa-1180-resource"
+deployment_name  = "gpt-5.6-luna"
+
+# Keep real credentials in the ignored terraform.tfvars file; do not commit them.
+foundry_api_key = "REPLACE_WITH_FOUNDRY_API_KEY"
+gh_pat          = "REPLACE_WITH_GITHUB_PAT"
+ui_password     = "REPLACE_WITH_A_STRONG_PASSWORD"
