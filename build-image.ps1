@@ -17,7 +17,10 @@ if (-not $RegistryName) {
 if (-not $Tag) {
     $dockerfileHash = (Get-FileHash (Join-Path $root "Dockerfile") -Algorithm SHA256).Hash
     $configHash = (Get-FileHash (Join-Path $root "opencode.json") -Algorithm SHA256).Hash
-    $Tag = "opencode:$(($dockerfileHash + $configHash).Substring(0, 12).ToLowerInvariant())"
+    $combined = [System.Text.Encoding]::UTF8.GetBytes($dockerfileHash + $configHash)
+    $combinedHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($combined)
+    $tagHash = ([System.BitConverter]::ToString($combinedHash) -replace "-", "").Substring(0, 12).ToLowerInvariant()
+    $Tag = "opencode:$tagHash"
 }
 
 $env:PYTHONIOENCODING = "utf-8"
