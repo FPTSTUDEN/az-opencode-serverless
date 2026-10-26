@@ -49,11 +49,46 @@ resource "azurerm_log_analytics_workspace" "law" {
   retention_in_days   = 30
 }
 
+# A delegated infrastructure subnet creates a standard Container Apps
+# environment. Express environments do not support Azure Files mounts.
+resource "azurerm_virtual_network" "aca" {
+  name                = "${local.name}-vnet"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  address_space       = ["10.0.0.0/16"]
+}
+
+resource "azurerm_subnet" "aca" {
+  name                 = "container-apps-infrastructure"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.aca.name
+  address_prefixes     = ["10.0.0.0/27"]
+
+  delegation {
+    name = "container-apps-delegation"
+
+    service_delegation {
+      name = "Microsoft.App/environments"
+      actions = [
+        "Microsoft.Network/virtualNetworks/subnets/join/action",
+      ]
+    }
+  }
+}
+
 resource "azurerm_container_app_environment" "env" {
-  name                       = "${local.name}-env"
+  # Changing the name forces replacement of the existing Express environment.
+  name                       = "${local.name}-env-standard"
   resource_group_name        = azurerm_resource_group.rg.name
   location                   = azurerm_resource_group.rg.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+  infrastructure_subnet_id   = azurerm_subnet.aca.id
+
+  # Workload-profile environments support Azure Files mounts; Express environments do not.
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
 }
 
 resource "azurerm_container_app_environment_storage" "workspace" {
@@ -63,21 +98,6 @@ resource "azurerm_container_app_environment_storage" "workspace" {
   share_name                   = azurerm_storage_share.workspace.name
   access_key                   = azurerm_storage_account.sa.primary_access_key
   access_mode                  = "ReadWrite"
-}
-
-# Build the image in ACR (no local Docker needed).
-# Re-run `terraform apply -replace=null_resource.image_build` after changing Dockerfile or opencode.json.
-resource "null_resource" "image_build" {
-  triggers = {
-    dockerfile = filesha256("${path.module}/Dockerfile")
-    config     = filesha256("${path.module}/opencode.json")
-  }
-  provisioner "local-exec" {
-    command = "az acr build -r ${azurerm_container_registry.acr.name} -t opencode:latest --no-logs ${path.module}"
-    environment = {
-      PYTHONIOENCODING = "utf-8"
-    }
-  }
 }
 
 resource "azurerm_user_assigned_identity" "app" {
@@ -98,7 +118,7 @@ resource "azurerm_container_app" "opencode" {
   container_app_environment_id = azurerm_container_app_environment.env.id
   revision_mode                = "Single"
 
-  depends_on = [null_resource.image_build, azurerm_role_assignment.acr_pull]
+  depends_on = [azurerm_role_assignment.acr_pull]
 
   identity {
     type         = "UserAssigned"
