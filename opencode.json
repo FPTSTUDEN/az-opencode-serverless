@@ -9,7 +9,14 @@
         "baseURL": "https://ide-copilot-anhdoa-1180-resource.services.ai.azure.com/openai/v1",
         "apiKey": "{env:AZURE_API_KEY}"
       },
-      "models": { "gpt-5.6-luna": { "name": "My model" } }
+      "models": {
+        "gpt-5.6-luna": {
+          "name": "My model",
+          "compatibility": {
+            "maxTokensField": "max_completion_tokens"
+          }
+        }
+      }
     }
   }
 }
