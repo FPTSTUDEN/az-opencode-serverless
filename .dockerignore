@@ -1,0 +1,9 @@
+.git
+.terraform
+.env
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
