@@ -2,18 +2,31 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$RegistryName,
 
-    [string]$Tag = "opencode:latest"
+    [string]$Tag
 )
 
 $ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+if (-not $Tag) {
+    $dockerfileHash = (Get-FileHash (Join-Path $root "Dockerfile") -Algorithm SHA256).Hash
+    $configHash = (Get-FileHash (Join-Path $root "opencode.json") -Algorithm SHA256).Hash
+    $Tag = "opencode:$(($dockerfileHash + $configHash).Substring(0, 12).ToLowerInvariant())"
+}
 
 $env:PYTHONIOENCODING = "utf-8"
 az acr build `
     --registry $RegistryName `
     --image $Tag `
     --no-logs `
-    (Split-Path -Parent $MyInvocation.MyCommand.Path)
+    $root
 
 if ($LASTEXITCODE -ne 0) {
     throw "Azure Container Registry image build failed with exit code $LASTEXITCODE."
 }
+
+$imageTag = $Tag.Split(":")[-1]
+@{ image_tag = $imageTag } | ConvertTo-Json | Set-Content `
+    (Join-Path $root "image.auto.tfvars.json") -Encoding utf8
+
+Write-Host "Built $Tag and selected it for the next Terraform apply."

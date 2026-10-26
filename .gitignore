@@ -10,6 +10,7 @@ crash.*.log
 *.tfvars.json
 !*.tfvars.example
 !*.tfvars.example.json
+image.auto.tfvars.json
 
 # Terraform CLI overrides
 override.tf

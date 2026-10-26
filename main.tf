@@ -170,7 +170,7 @@ resource "azurerm_container_app" "opencode" {
 
     container {
       name   = "opencode"
-      image  = "${azurerm_container_registry.acr.login_server}/opencode:latest"
+      image  = "${azurerm_container_registry.acr.login_server}/opencode:${var.image_tag}"
       cpu    = 1
       memory = "2Gi"
 
