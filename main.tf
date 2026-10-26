@@ -179,6 +179,10 @@ resource "azurerm_container_app" "opencode" {
         secret_name = "azure-key"
       }
       env {
+        name  = "AZURE_RESOURCE_NAME"
+        value = var.foundry_resource
+      }
+      env {
         name        = "GITHUB_TOKEN"
         secret_name = "gh-token"
       }
