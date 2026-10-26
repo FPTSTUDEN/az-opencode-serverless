@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+: "${GITHUB_TOKEN:?GITHUB_TOKEN must be set to configure GitHub authentication}"
+gh auth setup-git
+
+exec "$@"

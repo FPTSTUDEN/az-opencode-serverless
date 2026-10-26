@@ -17,8 +17,8 @@ if (-not $RegistryName) {
 if (-not $Tag) {
     $dockerfileHash = (Get-FileHash (Join-Path $root "Dockerfile") -Algorithm SHA256).Hash
     $configHash = (Get-FileHash (Join-Path $root "opencode.json") -Algorithm SHA256).Hash
-    $credentialHelperHash = (Get-FileHash (Join-Path $root "git-credential-github-token") -Algorithm SHA256).Hash
-    $combined = [System.Text.Encoding]::UTF8.GetBytes($dockerfileHash + $configHash + $credentialHelperHash)
+    $startupScriptHash = (Get-FileHash (Join-Path $root "start-opencode") -Algorithm SHA256).Hash
+    $combined = [System.Text.Encoding]::UTF8.GetBytes($dockerfileHash + $configHash + $startupScriptHash)
     $combinedHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($combined)
     $tagHash = ([System.BitConverter]::ToString($combinedHash) -replace "-", "").Substring(0, 12).ToLowerInvariant()
     $Tag = "opencode:$tagHash"
