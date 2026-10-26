@@ -42,13 +42,68 @@ resource "azurerm_storage_share" "workspace" {
 }
 
 data "azurerm_container_app_environment" "shared" {
-  name                = "azure-xiaoxi-siyuan-env"
-  resource_group_name = "rg-siyuan-prod"
+  count               = var.environment_mode == "shared" ? 1 : 0
+  name                = var.shared_environment_name
+  resource_group_name = var.shared_environment_resource_group
+}
+
+resource "azurerm_log_analytics_workspace" "law" {
+  count               = var.environment_mode == "dedicated" ? 1 : 0
+  name                = "${local.name}-law"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  sku                 = "PerGB2018"
+  retention_in_days   = 30
+}
+
+resource "azurerm_virtual_network" "aca" {
+  count               = var.environment_mode == "dedicated" ? 1 : 0
+  name                = "${local.name}-vnet"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  address_space       = ["10.0.0.0/16"]
+}
+
+resource "azurerm_subnet" "aca" {
+  count                = var.environment_mode == "dedicated" ? 1 : 0
+  name                 = "container-apps-infrastructure"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.aca[0].name
+  address_prefixes     = ["10.0.0.0/27"]
+
+  delegation {
+    name = "container-apps-delegation"
+
+    service_delegation {
+      name = "Microsoft.App/environments"
+      actions = [
+        "Microsoft.Network/virtualNetworks/subnets/join/action",
+      ]
+    }
+  }
+}
+
+resource "azurerm_container_app_environment" "dedicated" {
+  count                      = var.environment_mode == "dedicated" ? 1 : 0
+  name                       = "${local.name}-env"
+  resource_group_name        = azurerm_resource_group.rg.name
+  location                   = azurerm_resource_group.rg.location
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law[0].id
+  infrastructure_subnet_id   = azurerm_subnet.aca[0].id
+
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
+}
+
+locals {
+  environment_id = var.environment_mode == "shared" ? data.azurerm_container_app_environment.shared[0].id : azurerm_container_app_environment.dedicated[0].id
 }
 
 resource "azurerm_container_app_environment_storage" "workspace" {
   name                         = "opencode-workspace"
-  container_app_environment_id = data.azurerm_container_app_environment.shared.id
+  container_app_environment_id = local.environment_id
   account_name                 = azurerm_storage_account.sa.name
   share_name                   = azurerm_storage_share.workspace.name
   access_key                   = azurerm_storage_account.sa.primary_access_key
@@ -70,8 +125,9 @@ resource "azurerm_role_assignment" "acr_pull" {
 resource "azurerm_container_app" "opencode" {
   name                         = "opencode"
   resource_group_name          = azurerm_resource_group.rg.name
-  container_app_environment_id = data.azurerm_container_app_environment.shared.id
+  container_app_environment_id = local.environment_id
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
 
   depends_on = [azurerm_role_assignment.acr_pull, azurerm_container_app_environment_storage.workspace]
 

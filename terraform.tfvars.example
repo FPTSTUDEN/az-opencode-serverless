@@ -2,6 +2,11 @@
 location        = "REPLACE_WITH_AZURE_REGION"
 resource_prefix = "oh"
 
+# Use "dedicated" when the subscription allows another ACA environment.
+environment_mode              = "dedicated"
+shared_environment_name       = "azure-xiaoxi-siyuan-env"
+shared_environment_resource_group = "rg-siyuan-prod"
+
 # These match the endpoint and model currently configured in opencode.json.
 foundry_resource = "ide-copilot-anhdoa-1180-resource"
 deployment_name  = "gpt-5.6-luna"

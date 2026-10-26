@@ -2,7 +2,8 @@
 
 ## Deployment notes
 
-- The app uses the existing `azure-xiaoxi-siyuan-env` Container Apps environment in `rg-siyuan-prod` because the subscription allows only one environment.
+- By default, the app creates a dedicated Container Apps environment in the configured region.
+- If the subscription allows only one environment, set `environment_mode = "shared"` in `terraform.tfvars` and configure the existing environment name and resource group. This uses `azure-xiaoxi-siyuan-env` in `rg-siyuan-prod` by default.
 - Azure Files storage is not supported by ACA Express environments. The shared environment must be a standard/workload-profile environment with a delegated infrastructure subnet.
 - Container Apps environments and other Azure resources are regional. Changing `location` does not move them; it can force replacement and should be treated as a migration.
 - `build-image.ps1` builds `opencode:latest` separately in ACR. Build the image before applying Terraform when the Container App does not already exist.
