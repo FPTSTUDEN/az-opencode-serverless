@@ -73,7 +73,10 @@ resource "null_resource" "image_build" {
     config     = filesha256("${path.module}/opencode.json")
   }
   provisioner "local-exec" {
-    command = "az acr build -r ${azurerm_container_registry.acr.name} -t opencode:latest ${path.module}"
+    command = "az acr build -r ${azurerm_container_registry.acr.name} -t opencode:latest --no-logs ${path.module}"
+    environment = {
+      PYTHONIOENCODING = "utf-8"
+    }
   }
 }
 
