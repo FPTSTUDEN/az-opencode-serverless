@@ -165,14 +165,14 @@ resource "azurerm_container_app" "opencode" {
   }
 
   template {
-    min_replicas = 1
+    min_replicas = 0
     max_replicas = 1
 
     container {
       name   = "opencode"
       image  = "${azurerm_container_registry.acr.login_server}/opencode:${var.image_tag}"
-      cpu    = 1
-      memory = "2Gi"
+      cpu    = 0.5
+      memory = "1Gi"
 
       env {
         name        = "AZURE_API_KEY"
