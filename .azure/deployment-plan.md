@@ -1,5 +1,30 @@
 # Deployment Plan
 
+## Proposed SMB Conversation-State Test
+
+### Status
+Deployed and verified on 2026-10-28. User approved this isolated test-app change; the latest revision is healthy, the SMB data-mount probe passed, and the endpoint responds with expected HTTP 401 without credentials. Focused Terraform checks passed; the repository-wide validator wrapper has a known PowerShell argument-forwarding issue, and pre-existing `.tfvars` formatting is outside this change.
+
+### Goal
+Retest the isolated `opencode-smb-test` app with 2 GiB RAM and persistent OpenCode conversation data on a separate Azure Files SMB subdirectory, while retaining the existing `.opencode-smb-test` project workspace mount.
+
+### Proposed changes
+- Increase the test container from 0.5 vCPU / 1 GiB to 1 vCPU / 2 GiB (the supported Consumption resource pair for 2 GiB).
+- Create a distinct share directory `.opencode-smb-test-data` and mount it at `/tmp/opencode-data` with `mfsymlinks`.
+- Keep `XDG_DATA_HOME=/tmp/opencode-data`, so OpenCode conversation state uses that mount; leave the project mount at `/workspace` backed by `.opencode-smb-test`.
+- Do not modify the production app or other mounts/resources.
+
+### Validation and deployment
+- Review Terraform plan to confirm only the new data directory and isolated test-app update are proposed, with no production changes or destroys.
+- Run `terraform fmt`, `terraform validate`, and `terraform plan`.
+- After approval and validation, deploy through the Azure deployment workflow; verify the new revision is ready and its data path is mounted.
+- Ask the user to test conversation persistence across a test-app restart and package installation, then review ACA restart/memory diagnostics.
+
+### Risks
+- SMB-backed SQLite conversation state may still encounter locking or latency issues; this is an experiment, not a production recommendation.
+- 1 vCPU / 2 GiB increases active test compute usage compared with the current test allocation.
+- State remains confined to the dedicated test data directory; production data is out of scope.
+
 ## SMB Symlink Test Deployment
 
 ### Status
@@ -15,20 +40,30 @@ Deployed and verified. The isolated test app is running with `mfsymlinks`; its s
 - `main.tfvars.json` syntax check — SKIP; file absent.
 - Azure CLI confirms existing environment storage registration; production app configuration was read only.
 - Microsoft.App quota query returned no quota rows; this is an existing Consumption environment with max 1 test replica.
-- First revision hit `database is locked` while OpenCode stored state on SMB. The test revision now keeps OpenCode's XDG data in ephemeral `/tmp`; project/workspace operations remain on the SMB mount.
+- Initial test revision hit `database is locked` when OpenCode state was on SMB, so the prior revision kept XDG data local/ephemeral. The current revision deliberately mounts a distinct share directory at `/tmp/opencode-data` to retest state persistence and SQLite behavior after increasing memory.
 - Runtime logs confirm `SMB_SYMLINK_RENAME_PROBE_PASS`; unauthenticated endpoint probe returned HTTP 401 as expected for the password-protected server.
 - Live app state: `opencode-smb-test--0000002`, provisioning `Succeeded`, 1 active replica, URL `https://opencode-smb-test.agreeablesea-cc7fbc1c.swedencentral.azurecontainerapps.io`.
 - Azure validation wrapper failures: the PowerShell helper passes no Terraform arguments because its `Args` parameter shadows PowerShell's automatic `$Args`; equivalent Terraform checks were run directly and pass.
 - `terraform fmt -check -recursive` reports pre-existing formatting in `terraform.tfvars` and `terraform copy.tfvars`. These unrelated files were not changed; modified `.tf` files pass targeted formatting check.
 
 ## Section 7: Validation Proof
+- 2026-10-28 20:28 +07 — `terraform init -input=false`: PASS.
+- 2026-10-28 20:28 +07 — `terraform fmt -check main.tf outputs.tf`: PASS.
+- 2026-10-28 20:28 +07 — `terraform validate`: PASS.
+- 2026-10-28 20:28 +07 — `terraform plan -input=false -no-color`: PASS; only creates `.opencode-smb-test-data` and updates `opencode-smb-test` to 1 vCPU/2 GiB with a second SMB mount; 1 add, 1 change, 0 destroy.
+- 2026-10-28 20:28 +07 — `terraform state list`, template-variable scan: PASS; `main.tfvars.json` absent (JSON check skipped).
+- 2026-10-28 20:28 +07 — Azure CLI authenticated and selected subscription `4251edde-d9a9-4e8c-8855-79399bd4dc45`: PASS.
+- The official preflight wrapper was attempted but its `Args` parameter-shadowing bug caused Terraform commands to print usage; equivalent checks were then run directly. The wrapper run is not counted as proof of Terraform validation.
+- 2026-10-28 20:34 +07 — `terraform apply` completed: 1 share directory added, isolated test app updated, 0 destroys.
+- 2026-10-28 20:34 +07 — Azure reports revision `opencode-smb-test--0000003` healthy with 1 replica; configured resources are 1 vCPU / 2 GiB, and mounts are `.opencode-smb-test` at `/workspace` and `.opencode-smb-test-data` at `/tmp/opencode-data`, both with `mfsymlinks`.
+- 2026-10-28 20:34 +07 — Runtime logs show `SMB_SYMLINK_RENAME_PROBE_PASS` and `SMB_DATA_MOUNT_PROBE_PASS`; endpoint returns expected HTTP 401 without credentials.
 - 2026-10-28 18:39 +07 — `terraform fmt -check main.tf outputs.tf`: PASS.
 - 2026-10-28 18:39 +07 — `terraform validate`: PASS.
 - 2026-10-28 18:39 +07 — `terraform plan -input=false -no-color`: PASS; updates only the test app's startup command, 0 add / 1 change / 0 destroy.
 - 2026-10-28 18:47 +07 — repeat `terraform fmt -check main.tf outputs.tf`, `terraform validate`, `terraform plan -input=false -no-color`: PASS; same test-app-only update.
 - 2026-10-28 18:33 +07 — `terraform state list`: PASS.
 - 2026-10-28 18:35 +07 — `az role assignment list` for the existing app identity and ACR: `AcrPull` present.
-- Current plan probes symlink create/read and directory rename in the test subdirectory, then keeps OpenCode metadata at local ephemeral `/tmp` to avoid SQLite-over-SMB locking; no production app/storage change.
+- The existing workspace probe checks symlink create/read and directory rename; the proposed test additionally probes read/write in the separate SMB-backed OpenCode data mount. Production app/storage are unchanged.
 - Preflight workflow helper failed to forward Terraform CLI args due to `Args` parameter shadowing; equivalent direct commands above passed.
 - Recursive formatting still flags pre-existing `terraform.tfvars` and `terraform copy.tfvars`; touched `.tf` files pass formatting and unrelated tfvars remain unchanged.
 - No application source or image changes; build step not applicable.
@@ -37,6 +72,14 @@ Deployed and verified. The isolated test app is running with `mfsymlinks`; its s
 - 2026-10-28 18:54 +07 — Container Apps diagnostics report `SMB_SYMLINK_RENAME_PROBE_PASS` and OpenCode listening; endpoint probe returns HTTP 401 without credentials.
 
 ## All validation checks pass
+- [x] Terraform installed.
+- [x] Azure CLI installed and authenticated to the confirmed subscription.
+- [x] Terraform initialized successfully.
+- [x] Targeted Terraform formatting check for modified `.tf` files; recursive formatting check is not included because existing unrelated `.tfvars` files are known to be unformatted.
+- [x] Terraform configuration validation.
+- [x] Terraform plan reviewed: isolated test-app update and new data directory only; zero destroys.
+- [x] Terraform state list and template-variable scan.
+- [x] `main.tfvars.json` absent; JSON syntax check skipped.
 - [x] Terraform installed and Azure CLI authenticated to the approved subscription.
 - [x] Terraform init, format check, validate, and plan.
 - [x] Full plan contains only the isolated test app update; no production changes or destroys.

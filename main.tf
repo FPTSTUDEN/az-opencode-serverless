@@ -210,6 +210,11 @@ resource "azurerm_storage_share_directory" "smb_test" {
   storage_share_url = azurerm_storage_share.workspace.url
 }
 
+resource "azurerm_storage_share_directory" "smb_test_data" {
+  name              = ".opencode-smb-test-data"
+  storage_share_url = azurerm_storage_share.workspace.url
+}
+
 resource "azurerm_container_app" "opencode_smb_test" {
   name                         = "opencode-smb-test"
   resource_group_name          = azurerm_resource_group.rg.name
@@ -221,6 +226,7 @@ resource "azurerm_container_app" "opencode_smb_test" {
     azurerm_role_assignment.acr_pull,
     azurerm_container_app_environment_storage.workspace,
     azurerm_storage_share_directory.smb_test,
+    azurerm_storage_share_directory.smb_test_data,
   ]
 
   identity {
@@ -264,8 +270,8 @@ resource "azurerm_container_app" "opencode_smb_test" {
     container {
       name   = "opencode"
       image  = "${azurerm_container_registry.acr.login_server}/opencode:${var.image_tag}"
-      cpu    = 0.5
-      memory = "1Gi"
+      cpu    = 1
+      memory = "2Gi"
 
       env {
         name        = "AZURE_API_KEY"
@@ -300,6 +306,10 @@ resource "azurerm_container_app" "opencode_smb_test" {
         gh auth setup-git || exit 1
         export XDG_DATA_HOME=/tmp/opencode-data
         mkdir -p "$XDG_DATA_HOME" || exit 1
+        printf 'smb-data-probe' > "$XDG_DATA_HOME/.mount-probe" || exit 1
+        test "$(cat "$XDG_DATA_HOME/.mount-probe")" = 'smb-data-probe' || exit 1
+        rm "$XDG_DATA_HOME/.mount-probe" || exit 1
+        printf 'SMB_DATA_MOUNT_PROBE_PASS\n'
         exec opencode web --hostname 0.0.0.0 --port 4096
         SHELL
       ]
@@ -309,10 +319,23 @@ resource "azurerm_container_app" "opencode_smb_test" {
         path     = "/workspace"
         sub_path = azurerm_storage_share_directory.smb_test.name
       }
+
+      volume_mounts {
+        name     = "opencode-data"
+        path     = "/tmp/opencode-data"
+        sub_path = azurerm_storage_share_directory.smb_test_data.name
+      }
     }
 
     volume {
       name          = "workspace"
+      storage_name  = azurerm_container_app_environment_storage.workspace.name
+      storage_type  = "AzureFile"
+      mount_options = "mfsymlinks"
+    }
+
+    volume {
+      name          = "opencode-data"
       storage_name  = azurerm_container_app_environment_storage.workspace.name
       storage_type  = "AzureFile"
       mount_options = "mfsymlinks"
