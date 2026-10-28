@@ -1,5 +1,91 @@
 # Deployment Plan
 
+## SMB Symlink Test Deployment
+
+### Status
+Deployed and verified. The isolated test app is running with `mfsymlinks`; its startup symlink/rename probe passed. Production app configuration was not changed.
+
+### Validation evidence
+- `terraform init -input=false` — PASS.
+- `terraform fmt -check main.tf outputs.tf` — PASS.
+- `terraform validate` — PASS.
+- Full `terraform plan -input=false -no-color` — PASS; updates only the isolated test app, with 0 adds and 0 destroys.
+- `terraform state list` — PASS.
+- Template variable scan — PASS in the prescribed preflight script.
+- `main.tfvars.json` syntax check — SKIP; file absent.
+- Azure CLI confirms existing environment storage registration; production app configuration was read only.
+- Microsoft.App quota query returned no quota rows; this is an existing Consumption environment with max 1 test replica.
+- First revision hit `database is locked` while OpenCode stored state on SMB. The test revision now keeps OpenCode's XDG data in ephemeral `/tmp`; project/workspace operations remain on the SMB mount.
+- Runtime logs confirm `SMB_SYMLINK_RENAME_PROBE_PASS`; unauthenticated endpoint probe returned HTTP 401 as expected for the password-protected server.
+- Live app state: `opencode-smb-test--0000002`, provisioning `Succeeded`, 1 active replica, URL `https://opencode-smb-test.agreeablesea-cc7fbc1c.swedencentral.azurecontainerapps.io`.
+- Azure validation wrapper failures: the PowerShell helper passes no Terraform arguments because its `Args` parameter shadows PowerShell's automatic `$Args`; equivalent Terraform checks were run directly and pass.
+- `terraform fmt -check -recursive` reports pre-existing formatting in `terraform.tfvars` and `terraform copy.tfvars`. These unrelated files were not changed; modified `.tf` files pass targeted formatting check.
+
+## Section 7: Validation Proof
+- 2026-10-28 18:39 +07 — `terraform fmt -check main.tf outputs.tf`: PASS.
+- 2026-10-28 18:39 +07 — `terraform validate`: PASS.
+- 2026-10-28 18:39 +07 — `terraform plan -input=false -no-color`: PASS; updates only the test app's startup command, 0 add / 1 change / 0 destroy.
+- 2026-10-28 18:47 +07 — repeat `terraform fmt -check main.tf outputs.tf`, `terraform validate`, `terraform plan -input=false -no-color`: PASS; same test-app-only update.
+- 2026-10-28 18:33 +07 — `terraform state list`: PASS.
+- 2026-10-28 18:35 +07 — `az role assignment list` for the existing app identity and ACR: `AcrPull` present.
+- Current plan probes symlink create/read and directory rename in the test subdirectory, then keeps OpenCode metadata at local ephemeral `/tmp` to avoid SQLite-over-SMB locking; no production app/storage change.
+- Preflight workflow helper failed to forward Terraform CLI args due to `Args` parameter shadowing; equivalent direct commands above passed.
+- Recursive formatting still flags pre-existing `terraform.tfvars` and `terraform copy.tfvars`; touched `.tf` files pass formatting and unrelated tfvars remain unchanged.
+- No application source or image changes; build step not applicable.
+- 2026-10-28 18:50 +07 — Terraform apply created the dedicated share directory and isolated test app (2 added, 0 changed, 0 destroyed).
+- 2026-10-28 18:53 +07 — Terraform apply updated only the test app after the first startup attempt (0 added, 1 changed, 0 destroyed).
+- 2026-10-28 18:54 +07 — Container Apps diagnostics report `SMB_SYMLINK_RENAME_PROBE_PASS` and OpenCode listening; endpoint probe returns HTTP 401 without credentials.
+
+## All validation checks pass
+- [x] Terraform installed and Azure CLI authenticated to the approved subscription.
+- [x] Terraform init, format check, validate, and plan.
+- [x] Full plan contains only the isolated test app update; no production changes or destroys.
+- [x] Terraform state list and template variable scan.
+- [x] JSON syntax check (skipped: `main.tfvars.json` is not present).
+- [x] Container image, ACR pull identity, secret names, mount source, and ingress match existing app settings without displaying secret values.
+- [x] Static RBAC review confirms reuse of the existing managed identity and ACR pull assignment; no new role assignment.
+
+## Role Assignment Verification
+- Status: Verified (static review).
+- Identities checked: Existing user-assigned Container App identity `app`, reused by the test app.
+- Role confirmed: `AcrPull` scoped to the app's Azure Container Registry.
+- No additional role assignment is required for the SMB file share key-based mount.
+- [x] Apply the isolated test deployment only after validation workflow completes.
+- [x] Verify startup, app readiness, and SMB filesystem behavior in the dedicated subdirectory.
+
+### Goal
+Validate whether enabling Minshall+French symlink support on the ACA SMB mount resolves dependency installation failures, without modifying the existing OpenCode app or its workspace contents.
+
+### Approved scope
+- Reuse existing Container Apps environment, immutable OpenCode image, Azure Files SMB share registration, and required auth configuration.
+- Create a separately named test Container App, mounting only a dedicated test subdirectory of the existing share at `/workspace` with `mfsymlinks`.
+- Keep min replicas at 0 and max replicas at 1.
+- Do not change or restart the existing application.
+- Validate app readiness, symlink create/read/delete, and npm/pnpm-style rename/delete behavior in the isolated directory before inviting user testing.
+- No new storage account/share or NFS resources in this test.
+
+### Confirmed context
+- Subscription: Azure for Students (4251edde-d9a9-4e8c-8855-79399bd4dc45).
+- Region: Sweden Central.
+- Existing environment: azure-xiaoxi-siyuan-env in rg-siyuan-prod; Consumption profile and custom infrastructure subnet confirmed by read-only Azure queries.
+- Existing immutable app image: oh77b363acr.azurecr.io/opencode:799e9c2cc141.
+- Existing production app and workspace remain out of scope for edits.
+- User approved separate SMB mount-options test on 2026-10-28.
+
+### Risks and safeguards
+- Before deployment, verify ACA and Terraform/provider support for the `mfsymlinks` mount option and subdirectory mounts. Do not silently deploy without it.
+- Verify SMB server path confinement and mount only a dedicated directory, not production workspace content.
+- Reuse secrets without printing them or writing values to tracked files.
+- If mount option/subdirectory isolation is unsupported, stop and request an alternative rather than mount the production share root.
+- No new Azure Files capacity cost anticipated; test app incurs compute while active, plus routine logging.
+
+### Validation
+- Terraform plan should show only additive isolated test resources; do not apply changes to the current app.
+- After deployment, verify endpoint responds; test filesystem operations only within the isolated test directory; report the test URL and cleanup instructions.
+- The user will test OpenCode/npm in the isolated instance.
+
+## Previous Compute Change
+
 ## Status
 Validation incomplete — the requested `main.tf` checks passed, but recursive formatting reports pre-existing formatting in two `.tfvars` files. No deployment performed.
 

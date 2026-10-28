@@ -204,3 +204,118 @@ resource "azurerm_container_app" "opencode" {
     }
   }
 }
+
+resource "azurerm_storage_share_directory" "smb_test" {
+  name              = ".opencode-smb-test"
+  storage_share_url = azurerm_storage_share.workspace.url
+}
+
+resource "azurerm_container_app" "opencode_smb_test" {
+  name                         = "opencode-smb-test"
+  resource_group_name          = azurerm_resource_group.rg.name
+  container_app_environment_id = local.environment_id
+  revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
+
+  depends_on = [
+    azurerm_role_assignment.acr_pull,
+    azurerm_container_app_environment_storage.workspace,
+    azurerm_storage_share_directory.smb_test,
+  ]
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.app.id]
+  }
+
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = azurerm_user_assigned_identity.app.id
+  }
+
+  secret {
+    name  = "azure-key"
+    value = var.foundry_api_key
+  }
+  secret {
+    name  = "gh-token"
+    value = var.gh_pat
+  }
+  secret {
+    name  = "ui-pass"
+    value = var.ui_password
+  }
+
+  ingress {
+    external_enabled = true
+    target_port      = 4096
+    transport        = "auto"
+
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
+  }
+
+  template {
+    min_replicas = 0
+    max_replicas = 1
+
+    container {
+      name   = "opencode"
+      image  = "${azurerm_container_registry.acr.login_server}/opencode:${var.image_tag}"
+      cpu    = 0.5
+      memory = "1Gi"
+
+      env {
+        name        = "AZURE_API_KEY"
+        secret_name = "azure-key"
+      }
+      env {
+        name  = "AZURE_RESOURCE_NAME"
+        value = var.foundry_resource
+      }
+      env {
+        name        = "GITHUB_TOKEN"
+        secret_name = "gh-token"
+      }
+      env {
+        name        = "OPENCODE_SERVER_PASSWORD"
+        secret_name = "ui-pass"
+      }
+
+      command = ["/bin/sh", "-c"]
+      args = [<<-SHELL
+        probe="$(mktemp -d /workspace/.smb-probe.XXXXXX)" || exit 1
+        mkdir "$probe/package" "$probe/bin" || exit 1
+        printf '{"name":"smb-probe"}' > "$probe/package/package.json" || exit 1
+        ln -s ../package/package.json "$probe/bin/test-cli" || exit 1
+        test -L "$probe/bin/test-cli" || exit 1
+        test "$(cat "$probe/bin/test-cli")" = '{"name":"smb-probe"}' || exit 1
+        mv "$probe/package" "$probe/package-renamed" || exit 1
+        test -L "$probe/bin/test-cli" || exit 1
+        test -f "$probe/package-renamed/package.json" || exit 1
+        rm -rf "$probe" || exit 1
+        printf 'SMB_SYMLINK_RENAME_PROBE_PASS\n'
+        gh auth setup-git || exit 1
+        export XDG_DATA_HOME=/tmp/opencode-data
+        mkdir -p "$XDG_DATA_HOME" || exit 1
+        exec opencode web --hostname 0.0.0.0 --port 4096
+        SHELL
+      ]
+
+      volume_mounts {
+        name     = "workspace"
+        path     = "/workspace"
+        sub_path = azurerm_storage_share_directory.smb_test.name
+      }
+    }
+
+    volume {
+      name          = "workspace"
+      storage_name  = azurerm_container_app_environment_storage.workspace.name
+      storage_type  = "AzureFile"
+      mount_options = "mfsymlinks"
+    }
+  }
+}
