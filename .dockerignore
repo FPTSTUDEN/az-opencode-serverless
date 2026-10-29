@@ -1,5 +1,6 @@
 .git
 .terraform
+opencode.json
 .env
 *.tfstate
 *.tfstate.*

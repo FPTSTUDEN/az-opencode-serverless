@@ -4,7 +4,4 @@ set -eu
 : "${GITHUB_TOKEN:?GITHUB_TOKEN must be set to configure GitHub authentication}"
 gh auth setup-git
 
-export XDG_DATA_HOME=/workspace/.opencode-data
-mkdir -p "$XDG_DATA_HOME"
-
-exec "$@"
+exec node /opt/opencode-runtime/runner.mjs "$@"

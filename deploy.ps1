@@ -13,6 +13,9 @@ try {
 
     terraform apply -auto-approve
     if ($LASTEXITCODE -ne 0) { throw "Terraform deployment failed." }
+
+    .\publish-config.ps1 -Restart
+    if ($LASTEXITCODE -ne 0) { throw "OpenCode config publication or revision restart failed." }
 }
 finally {
     Pop-Location

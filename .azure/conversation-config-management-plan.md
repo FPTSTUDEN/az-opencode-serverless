@@ -1,7 +1,16 @@
 # Conversation persistence and runtime configuration plan
 
 **Tracking issue:** [#2 — Persist OpenCode conversations and externalize runtime configuration](https://github.com/FPTSTUDEN/az-opencode-serverless/issues/2)  
-**Status:** Phase 1 validated against OpenCode 1.19.4. Phases 2–4 remain planned.
+**Status:** Phases 1–3 are implemented and locally validated. Azure deployment, legacy-share migration verification, and phase 4 rollout/restore drills remain pending.
+
+## Implementation progress
+
+- Terraform provisions private `opencode-config` and `opencode-sessions` Blob containers, grants the app identity reader access to config plus contributor access to session exports, enables Blob versioning with 7-day soft-delete retention, and deletes noncurrent session blob versions after 30 days.
+- `publish-config.ps1` checks JSON syntax and top-level object shape, publishes `opencode.json` as an immutable SHA-256-addressed artifact, promotes it with a small `current.json` pointer, and can restart the latest revision. OpenCode performs its own config parsing at startup. `deploy.ps1` invokes the publisher after Terraform; config-only updates do not rebuild the image or apply Terraform.
+- The startup runner downloads and hash-verifies config, migrates an existing legacy share database once if found, imports session snapshots, then starts OpenCode with the live database under `/tmp`.
+- The runner targets a 60-second export interval, uses ETag-conditional Blob updates and snapshot timestamp/message-tail checks to avoid replacing a newer transcript with a stale overlapping-revision snapshot, and skips ambiguous equal-timestamp divergent exports rather than selecting one arbitrarily. It attempts a final export after OpenCode exits. Export failures are logged by session ID without transcript contents.
+- The selected periodic policy is best effort: recovery lag includes export duration, and an abrupt stop can lose changes since the last completed export. This is not a zero-loss handoff guarantee.
+- Local runtime unit tests (12), PowerShell parsing, Terraform validation, production dependency audit (0 vulnerabilities), and a Docker image smoke test passed. No Terraform apply or Azure Blob upload has been performed as part of this implementation.
 
 ## Phase 1 validation notes
 
