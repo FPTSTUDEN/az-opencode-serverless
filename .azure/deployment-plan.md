@@ -1,5 +1,19 @@
 # Deployment Plan
 
+## Proposed Dedicated Conversation-Share Retest
+
+### Status
+Revision `opencode-smb-test--0000012` deployed the XDG environment-variable fix and uses the dedicated `opencode-conversations` share at `/opencode-data` (root, no subpath or `mfsymlinks`). Both SMB probes pass, but OpenCode exits with `database is locked`; the startup probe then fails. The share now contains `opencode/opencode.db` at 0 bytes plus `log` and `repos` directories. Azure reports revision `0000012` with 0 replicas and 100% traffic; prior revision `0000011` still has 1 replica but 0% traffic. Production revision `0000006` also reports `database is locked`; production revisions `0000003` (0% traffic) and `0000006` (100% traffic) each currently have 1 replica and both mount the same `workspace` share at `/workspace`, so concurrent SQLite access is a possible contributor there. The production share's current `opencode.db` also reports 0 bytes. This does not prove historical revision `0000003` behavior, and the test error still occurs on its separate share. Production is unchanged.
+
+### Proposed changes
+- Keep the test workspace on the existing `workspace` share, isolated under `.opencode-smb-test` at `/workspace` with `mfsymlinks`.
+- Keep the conversation share root mounted at `/opencode-data` without mount options and set `XDG_DATA_HOME=/opencode-data` as a Container Apps environment variable.
+- Preserve the conversation DB and WAL files still held by revision `0000011` at the CR-suffixed local path before deactivating or restarting that replica. Do not treat the new zero-byte database as a migrated copy.
+- Investigate a persistence backend with locking semantics suitable for SQLite or a supported server database before further SMB SQLite retries.
+
+### Risks
+- The CR-suffixed database is outside Azure Files and can be lost when its container stops. SQLite on the new Azure Files share is currently failing at startup; production remains unchanged.
+
 ## Proposed Non-Nested SMB Data-Mount Test
 
 ### Status

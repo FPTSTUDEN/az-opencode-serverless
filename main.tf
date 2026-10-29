@@ -41,6 +41,12 @@ resource "azurerm_storage_share" "workspace" {
   quota              = 50
 }
 
+resource "azurerm_storage_share" "conversation_data" {
+  name               = "opencode-conversations"
+  storage_account_id = azurerm_storage_account.sa.id
+  quota              = 50
+}
+
 data "azurerm_container_app_environment" "shared" {
   count               = var.environment_mode == "shared" ? 1 : 0
   name                = var.shared_environment_name
@@ -106,6 +112,15 @@ resource "azurerm_container_app_environment_storage" "workspace" {
   container_app_environment_id = local.environment_id
   account_name                 = azurerm_storage_account.sa.name
   share_name                   = azurerm_storage_share.workspace.name
+  access_key                   = azurerm_storage_account.sa.primary_access_key
+  access_mode                  = "ReadWrite"
+}
+
+resource "azurerm_container_app_environment_storage" "conversation_data" {
+  name                         = "opencode-conversations"
+  container_app_environment_id = local.environment_id
+  account_name                 = azurerm_storage_account.sa.name
+  share_name                   = azurerm_storage_share.conversation_data.name
   access_key                   = azurerm_storage_account.sa.primary_access_key
   access_mode                  = "ReadWrite"
 }
@@ -225,8 +240,8 @@ resource "azurerm_container_app" "opencode_smb_test" {
   depends_on = [
     azurerm_role_assignment.acr_pull,
     azurerm_container_app_environment_storage.workspace,
+    azurerm_container_app_environment_storage.conversation_data,
     azurerm_storage_share_directory.smb_test,
-    azurerm_storage_share_directory.smb_test_data,
   ]
 
   identity {
@@ -289,6 +304,10 @@ resource "azurerm_container_app" "opencode_smb_test" {
         name        = "OPENCODE_SERVER_PASSWORD"
         secret_name = "ui-pass"
       }
+      env {
+        name  = "XDG_DATA_HOME"
+        value = "/opencode-data"
+      }
 
       command = ["/bin/sh", "-c"]
       args = [<<-SHELL
@@ -303,7 +322,6 @@ resource "azurerm_container_app" "opencode_smb_test" {
         test -f "$probe/package-renamed/package.json" || exit 1
         rm -rf "$probe" || exit 1
         printf 'SMB_SYMLINK_RENAME_PROBE_PASS\n'
-        export XDG_DATA_HOME=/tmp/opencode-data
         mkdir -p "$XDG_DATA_HOME" || exit 1
         printf 'smb-data-probe' > "$XDG_DATA_HOME/.mount-probe" || exit 1
         test "$(cat "$XDG_DATA_HOME/.mount-probe")" = 'smb-data-probe' || exit 1
@@ -320,9 +338,8 @@ resource "azurerm_container_app" "opencode_smb_test" {
       }
 
       volume_mounts {
-        name     = "opencode-data"
-        path     = "/tmp/opencode-data"
-        sub_path = azurerm_storage_share_directory.smb_test_data.name
+        name = "opencode-data"
+        path = "/opencode-data"
       }
     }
 
@@ -334,10 +351,9 @@ resource "azurerm_container_app" "opencode_smb_test" {
     }
 
     volume {
-      name          = "opencode-data"
-      storage_name  = azurerm_container_app_environment_storage.workspace.name
-      storage_type  = "AzureFile"
-      mount_options = "mfsymlinks"
+      name         = "opencode-data"
+      storage_name = azurerm_container_app_environment_storage.conversation_data.name
+      storage_type = "AzureFile"
     }
   }
 }
