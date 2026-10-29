@@ -174,6 +174,12 @@ resource "azurerm_role_assignment" "opencode_config_reader" {
   principal_id         = azurerm_user_assigned_identity.app.principal_id
 }
 
+resource "azurerm_role_assignment" "opencode_config_publisher" {
+  scope                = azurerm_storage_container.opencode_config.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
 resource "azurerm_role_assignment" "opencode_sessions_contributor" {
   scope                = azurerm_storage_container.opencode_sessions.id
   role_definition_name = "Storage Blob Data Contributor"
