@@ -303,14 +303,13 @@ resource "azurerm_container_app" "opencode_smb_test" {
         test -f "$probe/package-renamed/package.json" || exit 1
         rm -rf "$probe" || exit 1
         printf 'SMB_SYMLINK_RENAME_PROBE_PASS\n'
-        gh auth setup-git || exit 1
         export XDG_DATA_HOME=/tmp/opencode-data
         mkdir -p "$XDG_DATA_HOME" || exit 1
         printf 'smb-data-probe' > "$XDG_DATA_HOME/.mount-probe" || exit 1
         test "$(cat "$XDG_DATA_HOME/.mount-probe")" = 'smb-data-probe' || exit 1
         rm "$XDG_DATA_HOME/.mount-probe" || exit 1
         printf 'SMB_DATA_MOUNT_PROBE_PASS\n'
-        exec opencode web --hostname 0.0.0.0 --port 4096
+        exec /usr/local/bin/start-opencode opencode web --hostname 0.0.0.0 --port 4096
         SHELL
       ]
 
