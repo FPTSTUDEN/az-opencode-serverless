@@ -1,7 +1,19 @@
 # Conversation persistence and runtime configuration plan
 
 **Tracking issue:** [#2 — Persist OpenCode conversations and externalize runtime configuration](https://github.com/FPTSTUDEN/az-opencode-serverless/issues/2)  
-**Status:** Proposal; implementation decisions require validation against a pinned OpenCode release.
+**Status:** Phase 1 validated against OpenCode 1.19.4. Phases 2–4 remain planned.
+
+## Phase 1 validation notes
+
+- The healthy deployed revision `opencode--0000003` reported OpenCode `1.19.4`. Revision `opencode--0000007` currently has no replica, so its exact installed version could not be queried. The previous Dockerfile installed the floating `opencode-ai` latest tag.
+- Pinned the image to `opencode-ai@1.19.4`, matching the currently healthy deployed revision rather than upgrading during the persistence investigation.
+- Successfully built the image locally as `opencode-phase1:1.19.4`.
+- Verified the pinned CLI exposes `opencode export [sessionID]` and `opencode import <file>`. Export supports `--sanitize`; import accepts a JSON file.
+- In disposable containers with an isolated local data directory, created a synthetic session and user-only transcript, exported it, imported it into a fresh database, and re-exported it. Session ID, title, `/workspace` directory, and message text were preserved.
+- Imported the same 61-message export twice into an existing session database. Re-export still contained exactly 61 messages; no duplicate messages were observed. Appended a synthetic user-only message after restore and verified the restored session exported with 62 messages. This does not test a model-generated reply.
+- During 60 synthetic user-only writes through the server, ran 40 CLI exports. All exports parsed as JSON and the test reported no command failures. This is a local-filesystem smoke test, not proof of safe SQLite behavior on Azure Files.
+- Verified `OPENCODE_CONFIG` by starting the pinned server with a separate config file and checking that the server's effective config returned the configured model value.
+- Test containers, image, and temporary export file are removed after validation. Azure Files locking characteristics, cloud Blob upload behavior, production RPO/RTO, and zero-loss revision handoff remain untested.
 
 ## Goals
 

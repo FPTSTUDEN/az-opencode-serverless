@@ -16,7 +16,7 @@ RUN git config --system url."https://github.com/".insteadOf "git@github.com:" \
 COPY start-opencode /usr/local/bin/start-opencode
 RUN chmod 0755 /usr/local/bin/start-opencode
 # OpenCode, Cloudflare Wrangler, and Playwright CLI/test runner.
-RUN npm i -g opencode-ai wrangler @playwright/test \
+RUN npm i -g opencode-ai@1.19.4 wrangler @playwright/test \
     && npx playwright install --with-deps chromium
 COPY opencode.json /root/.config/opencode/opencode.json
 WORKDIR /workspace
