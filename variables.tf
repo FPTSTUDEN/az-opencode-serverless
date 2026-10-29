@@ -7,6 +7,12 @@ variable "image_tag" {
   default     = "latest"
 }
 
+variable "smb_test_image_tag" {
+  type        = string
+  description = "Optional image tag for the isolated SMB test app; defaults to image_tag."
+  default     = null
+}
+
 variable "environment_mode" {
   type        = string
   description = "Use the existing shared ACA environment or create a dedicated one."

@@ -269,7 +269,7 @@ resource "azurerm_container_app" "opencode_smb_test" {
 
     container {
       name   = "opencode"
-      image  = "${azurerm_container_registry.acr.login_server}/opencode:${var.image_tag}"
+      image  = "${azurerm_container_registry.acr.login_server}/opencode:${coalesce(var.smb_test_image_tag, var.image_tag)}"
       cpu    = 1
       memory = "2Gi"
 

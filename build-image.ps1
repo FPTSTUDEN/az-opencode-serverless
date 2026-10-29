@@ -1,7 +1,9 @@
 param(
     [string]$RegistryName,
 
-    [string]$Tag
+    [string]$Tag,
+
+    [switch]$ForSmbTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,7 +38,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $imageTag = $Tag.Split(":")[-1]
-@{ image_tag = $imageTag } | ConvertTo-Json | Set-Content `
-    (Join-Path $root "image.auto.tfvars.json") -Encoding utf8
+if ($ForSmbTest) {
+    @{ smb_test_image_tag = $imageTag } | ConvertTo-Json | Set-Content `
+        (Join-Path $root "smb-test.auto.tfvars.json") -Encoding utf8
+} else {
+    @{ image_tag = $imageTag } | ConvertTo-Json | Set-Content `
+        (Join-Path $root "image.auto.tfvars.json") -Encoding utf8
+}
 
 Write-Host "Built $Tag and selected it for the next Terraform apply."
