@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -40,6 +40,34 @@ test("backup stores new exports and refuses to overwrite a newer session", async
   const stored = JSON.parse((await container.getBlockBlobClient(`sessions/${sessionId}.json`).downloadToBuffer()).toString())
   assert.equal(stored.info.time.updated, 20)
   assert.equal(stored.messages.length, 1)
+})
+
+test("backup emits IDs and per-session outcomes without transcript content", async () => {
+  const container = new MemoryContainer()
+  const current = {
+    value: session(sessionId, {
+      updated: 20,
+      messages: [{ info: { id: "msg1" }, parts: [{ text: "private transcript" }] }],
+    }),
+  }
+  const cli = cliFor(current)
+  const exportDir = await mkdtemp(path.join(os.tmpdir(), "opencode-export-events-test-"))
+  const events = []
+  try {
+    await backupSessions(container, {
+      runCli: cli.runCli,
+      dataHome: "/tmp/test-data",
+      exportDir,
+      onEvent: (event) => events.push(event),
+    })
+    assert.deepEqual(events, [
+      { event: "backup.session_list", count: 1, sessionIds: [sessionId], invalidCount: 0 },
+      { event: "backup.session", sessionId, export: "ok", stage: "ok", blob: "uploaded" },
+    ])
+    assert.equal(JSON.stringify(events).includes("private transcript"), false)
+  } finally {
+    await rm(exportDir, { recursive: true, force: true })
+  }
 })
 
 test("backup refuses a newer-looking snapshot that omits the current transcript tail", async () => {
@@ -127,19 +155,107 @@ test("restore imports valid sessions from private snapshots and ignores control 
   container.blobs.set("control/legacy-migration-complete.json", { content: Buffer.from("{}") })
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "opencode-restore-test-"))
   const imports = []
+  const events = []
   try {
     const count = await restoreSessions(container, {
       dataHome: tempHome,
+      exportDir: path.join(tempHome, "exports"),
+      onEvent: (event) => events.push(event),
       async runCli(args, { env }) {
         assert.equal(env.XDG_DATA_HOME, tempHome)
         if (args[0] === "import") imports.push(JSON.parse(await readFile(args[1], "utf8")))
       },
     })
-    assert.equal(count, 1)
+    assert.deepEqual(count, { imported: 1, stagedRecovered: 0, stagedIgnored: 0 })
+    assert.deepEqual(events, [
+      { event: "restore.session_list", count: 1, sessionIds: [sessionId] },
+      {
+        event: "restore.session",
+        sessionId,
+        blobCandidate: true,
+        stagedCandidate: false,
+        stage: "absent",
+        source: "blob",
+        import: "ok",
+      },
+    ])
     assert.equal(imports[0].info.id, sessionId)
     assert.equal(imports[0].messages.length, 1)
   } finally {
     await rm(tempHome, { recursive: true, force: true })
+  }
+})
+
+test("restore prefers and promotes a staged conflict snapshot before importing", async () => {
+  const container = new MemoryContainer()
+  const id = sessionId
+  const blobSession = session(id, { updated: 20, messages: [{ info: { id: "msg1" }, parts: [{ text: "old" }] }] })
+  container.blobs.set(`sessions/${id}.json`, {
+    content: Buffer.from(JSON.stringify(blobSession)),
+    metadata: { updatedat: "20", messagecount: "1", tailids: "msg1", sha256: "old-hash" },
+    etag: "etag-blob",
+  })
+  const stagedSession = session(id, {
+    updated: 20,
+    messages: [{ info: { id: "msg1" }, parts: [{ text: "recovered in-progress turn" }] }],
+  })
+  const stagedContent = Buffer.from(JSON.stringify(stagedSession))
+  const exportDir = await mkdtemp(path.join(os.tmpdir(), "opencode-staged-recovery-test-"))
+  await writeFile(path.join(exportDir, `${id}.json`), stagedContent)
+  const imports = []
+  const events = []
+  try {
+    const result = await restoreSessions(container, {
+      exportDir,
+      dataHome: "/tmp/recovery-data",
+      onEvent: (event) => events.push(event),
+      async runCli(args) {
+        if (args[0] === "import") imports.push(JSON.parse(await readFile(args[1], "utf8")))
+      },
+    })
+    assert.deepEqual(result, { imported: 1, stagedRecovered: 1, stagedIgnored: 0 })
+    assert.deepEqual(events[1], {
+      event: "restore.session",
+      sessionId: id,
+      blobCandidate: true,
+      stagedCandidate: true,
+      stage: "present",
+      source: "staged",
+      import: "ok",
+    })
+    assert.equal(imports[0].messages[0].parts[0].text, "recovered in-progress turn")
+    const persisted = JSON.parse((await container.getBlockBlobClient(`sessions/${id}.json`).downloadToBuffer()).toString())
+    assert.equal(persisted.messages[0].parts[0].text, "recovered in-progress turn")
+    assert.equal((await readFile(path.join(exportDir, `${id}.json`))).toString(), stagedContent.toString())
+  } finally {
+    await rm(exportDir, { recursive: true, force: true })
+  }
+})
+
+test("restore keeps the newer Blob snapshot when staged data is stale", async () => {
+  const container = new MemoryContainer()
+  const id = sessionId
+  const blobSession = session(id, { updated: 30, messages: [{ info: { id: "msg1" } }, { info: { id: "msg2" } }] })
+  const blobContent = Buffer.from(JSON.stringify(blobSession))
+  container.blobs.set(`sessions/${id}.json`, {
+    content: blobContent,
+    metadata: { updatedat: "30", messagecount: "2", tailids: "msg1,msg2", sha256: "newer-hash" },
+    etag: "etag-newer",
+  })
+  const exportDir = await mkdtemp(path.join(os.tmpdir(), "opencode-stale-stage-test-"))
+  await writeFile(path.join(exportDir, `${id}.json`), JSON.stringify(session(id, { updated: 20, messages: [{ info: { id: "msg1" } }] })))
+  const imports = []
+  try {
+    const result = await restoreSessions(container, {
+      exportDir,
+      async runCli(args) {
+        if (args[0] === "import") imports.push(JSON.parse(await readFile(args[1], "utf8")))
+      },
+    })
+    assert.deepEqual(result, { imported: 1, stagedRecovered: 0, stagedIgnored: 0 })
+    assert.equal(imports[0].messages.length, 2)
+  } finally {
+    await rm(exportDir, { recursive: true, force: true })
   }
 })
 
