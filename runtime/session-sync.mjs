@@ -172,7 +172,7 @@ async function storeSession(containerClient, session) {
 
 export async function backupSessions(
   containerClient,
-  { runCli, dataHome = process.env.XDG_DATA_HOME, exportDir } = {},
+  { runCli, dataHome = process.env.XDG_DATA_HOME, exportDir, onEvent } = {},
 ) {
   if (typeof runCli !== "function") throw new Error("backupSessions requires a CLI runner")
   const env = { ...process.env, ...(dataHome ? { XDG_DATA_HOME: dataHome } : {}) }
@@ -180,28 +180,47 @@ export async function backupSessions(
   const listed = listOutput.trim() ? parseJson(listOutput, "Session list") : []
   if (!Array.isArray(listed)) throw new Error("OpenCode session list was not an array")
 
+  const sessionIds = listed.map((item) => item?.id).filter((id) => typeof id === "string" && /^ses[A-Za-z0-9_-]+$/.test(id))
+  onEvent?.({ event: "backup.session_list", count: listed.length, sessionIds, invalidCount: listed.length - sessionIds.length })
+
   const result = { total: listed.length, uploaded: 0, unchanged: 0, stale: 0, conflicts: 0, staged: 0, conflictIds: [], failures: [] }
   for (const item of listed) {
     const id = item?.id
     if (typeof id !== "string" || !/^ses[A-Za-z0-9_-]+$/.test(id)) {
       result.failures.push({ id: "unknown", message: "Session list contained an invalid session ID" })
+      onEvent?.({ event: "backup.session", sessionId: null, export: "skipped", stage: "skipped", blob: "skipped", status: "invalid_id" })
       continue
     }
 
+    const event = {
+      event: "backup.session",
+      sessionId: id,
+      export: "failed",
+      stage: exportDir ? "not_attempted" : "disabled",
+      blob: "not_attempted",
+    }
     try {
       const raw = await runCli(["export", id], { env })
       const session = parseSessionExport(raw, id)
+      event.export = "ok"
       const content = Buffer.from(JSON.stringify(session), "utf8")
       if (exportDir) {
+        event.stage = "failed"
         await stageSessionExport(exportDir, session, content)
         result.staged++
+        event.stage = "ok"
       }
+      event.blob = "failed"
       const outcome = await storeSession(containerClient, session)
       const key = outcome === "conflict" ? "conflicts" : outcome
       result[key]++
+      event.blob = outcome
       if (outcome === "conflict") result.conflictIds.push(id)
     } catch (error) {
+      event.error = error.message
       result.failures.push({ id, message: error.message })
+    } finally {
+      onEvent?.(event)
     }
   }
   return result
@@ -209,24 +228,28 @@ export async function backupSessions(
 
 export async function restoreSessions(
   containerClient,
-  { runCli, dataHome = process.env.XDG_DATA_HOME, exportDir } = {},
+  { runCli, dataHome = process.env.XDG_DATA_HOME, exportDir, onEvent } = {},
 ) {
   if (typeof runCli !== "function") throw new Error("restoreSessions requires a CLI runner")
   if (!exportDir) throw new Error("restoreSessions requires the mounted export staging directory")
 
-  const sessionIds = new Set()
+  const blobSessionIds = new Set()
+  const stagedSessionIds = new Set()
   for await (const item of containerClient.listBlobsFlat({ prefix: SESSION_PREFIX })) {
     const id = sessionIdFromBlobName(item.name)
-    if (id) sessionIds.add(id)
+    if (id) blobSessionIds.add(id)
   }
   try {
     for (const name of await readdir(exportDir)) {
       const id = sessionIdFromStageName(name)
-      if (id) sessionIds.add(id)
+      if (id) stagedSessionIds.add(id)
     }
   } catch (error) {
     if (error.code !== "ENOENT") throw error
   }
+  const sessionIds = new Set([...blobSessionIds, ...stagedSessionIds])
+  const orderedSessionIds = [...sessionIds].sort()
+  onEvent?.({ event: "restore.session_list", count: orderedSessionIds.length, sessionIds: orderedSessionIds })
 
   const env = { ...process.env, ...(dataHome ? { XDG_DATA_HOME: dataHome } : {}) }
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "opencode-import-"))
@@ -234,21 +257,67 @@ export async function restoreSessions(
   let stagedRecovered = 0
   let stagedIgnored = 0
   try {
-    for (const expectedId of [...sessionIds].sort()) {
+    for (const expectedId of orderedSessionIds) {
       const blob = containerClient.getBlockBlobClient(`${SESSION_PREFIX}${expectedId}.json`)
       let selected
+      let stageState = stagedSessionIds.has(expectedId) ? "present" : "absent"
       try {
-        selected = await resolveSessionSnapshot(blob, expectedId, path.join(exportDir, `${expectedId}.json`))
+        try {
+          selected = await resolveSessionSnapshot(blob, expectedId, path.join(exportDir, `${expectedId}.json`))
+        } catch (error) {
+          if (error.code !== "ENOENT" && !/valid JSON|did not match expected session/.test(error.message)) throw error
+          stageState = error.code === "ENOENT" ? "missing" : "invalid"
+          stagedIgnored++
+          selected = await resolveSessionSnapshot(blob, expectedId)
+        }
       } catch (error) {
-        if (error.code !== "ENOENT" && !/valid JSON|did not match expected session/.test(error.message)) throw error
-        stagedIgnored++
-        selected = await resolveSessionSnapshot(blob, expectedId)
+        onEvent?.({
+          event: "restore.session",
+          sessionId: expectedId,
+          blobCandidate: blobSessionIds.has(expectedId),
+          stagedCandidate: stagedSessionIds.has(expectedId),
+          stage: stageState,
+          source: "none",
+          import: "not_attempted",
+          status: "selection_failed",
+          error: error.message,
+        })
+        throw error
       }
-      if (!selected) continue
+      if (!selected) {
+        onEvent?.({
+          event: "restore.session",
+          sessionId: expectedId,
+          blobCandidate: blobSessionIds.has(expectedId),
+          stagedCandidate: stagedSessionIds.has(expectedId),
+          stage: stageState,
+          source: "none",
+          import: "skipped",
+        })
+        continue
+      }
 
+      const source = selected.stagedRecovered ? "staged" : "blob"
+      const event = {
+        event: "restore.session",
+        sessionId: expectedId,
+        blobCandidate: blobSessionIds.has(expectedId),
+        stagedCandidate: stagedSessionIds.has(expectedId),
+        stage: stageState,
+        source,
+        import: "failed",
+      }
       const inputPath = path.join(tempDir, `${expectedId}.json`)
-      await writeFile(inputPath, JSON.stringify(selected.session), { mode: 0o600 })
-      await runCli(["import", inputPath], { env })
+      try {
+        await writeFile(inputPath, JSON.stringify(selected.session), { mode: 0o600 })
+        await runCli(["import", inputPath], { env })
+        event.import = "ok"
+      } catch (error) {
+        event.error = error.message
+        throw error
+      } finally {
+        onEvent?.(event)
+      }
       imported++
       if (selected.stagedRecovered) stagedRecovered++
     }
@@ -260,14 +329,14 @@ export async function restoreSessions(
 
 export async function migrateLegacySessions(
   containerClient,
-  { runCli, legacyDataHome, databaseExists, exportDir } = {},
+  { runCli, legacyDataHome, databaseExists, exportDir, onEvent } = {},
 ) {
   if (!legacyDataHome || typeof runCli !== "function") throw new Error("Legacy migration requires a data path and CLI runner")
   const marker = containerClient.getBlockBlobClient("control/legacy-migration-complete.json")
   if (await marker.exists()) return { migrated: false, reason: "already-complete" }
   if (!databaseExists) return { migrated: false, reason: "no-legacy-database" }
 
-  const result = await backupSessions(containerClient, { runCli, dataHome: legacyDataHome, exportDir })
+  const result = await backupSessions(containerClient, { runCli, dataHome: legacyDataHome, exportDir, onEvent })
   if (result.failures.length || result.conflicts) {
     throw new Error(
       `Legacy conversation export had ${result.failures.length} failure(s) and ${result.conflicts} ambiguous conflict(s); startup blocked`,

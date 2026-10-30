@@ -42,6 +42,34 @@ test("backup stores new exports and refuses to overwrite a newer session", async
   assert.equal(stored.messages.length, 1)
 })
 
+test("backup emits IDs and per-session outcomes without transcript content", async () => {
+  const container = new MemoryContainer()
+  const current = {
+    value: session(sessionId, {
+      updated: 20,
+      messages: [{ info: { id: "msg1" }, parts: [{ text: "private transcript" }] }],
+    }),
+  }
+  const cli = cliFor(current)
+  const exportDir = await mkdtemp(path.join(os.tmpdir(), "opencode-export-events-test-"))
+  const events = []
+  try {
+    await backupSessions(container, {
+      runCli: cli.runCli,
+      dataHome: "/tmp/test-data",
+      exportDir,
+      onEvent: (event) => events.push(event),
+    })
+    assert.deepEqual(events, [
+      { event: "backup.session_list", count: 1, sessionIds: [sessionId], invalidCount: 0 },
+      { event: "backup.session", sessionId, export: "ok", stage: "ok", blob: "uploaded" },
+    ])
+    assert.equal(JSON.stringify(events).includes("private transcript"), false)
+  } finally {
+    await rm(exportDir, { recursive: true, force: true })
+  }
+})
+
 test("backup refuses a newer-looking snapshot that omits the current transcript tail", async () => {
   const container = new MemoryContainer()
   const current = {
@@ -127,16 +155,30 @@ test("restore imports valid sessions from private snapshots and ignores control 
   container.blobs.set("control/legacy-migration-complete.json", { content: Buffer.from("{}") })
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "opencode-restore-test-"))
   const imports = []
+  const events = []
   try {
     const count = await restoreSessions(container, {
       dataHome: tempHome,
       exportDir: path.join(tempHome, "exports"),
+      onEvent: (event) => events.push(event),
       async runCli(args, { env }) {
         assert.equal(env.XDG_DATA_HOME, tempHome)
         if (args[0] === "import") imports.push(JSON.parse(await readFile(args[1], "utf8")))
       },
     })
     assert.deepEqual(count, { imported: 1, stagedRecovered: 0, stagedIgnored: 0 })
+    assert.deepEqual(events, [
+      { event: "restore.session_list", count: 1, sessionIds: [sessionId] },
+      {
+        event: "restore.session",
+        sessionId,
+        blobCandidate: true,
+        stagedCandidate: false,
+        stage: "absent",
+        source: "blob",
+        import: "ok",
+      },
+    ])
     assert.equal(imports[0].info.id, sessionId)
     assert.equal(imports[0].messages.length, 1)
   } finally {
@@ -161,15 +203,26 @@ test("restore prefers and promotes a staged conflict snapshot before importing",
   const exportDir = await mkdtemp(path.join(os.tmpdir(), "opencode-staged-recovery-test-"))
   await writeFile(path.join(exportDir, `${id}.json`), stagedContent)
   const imports = []
+  const events = []
   try {
     const result = await restoreSessions(container, {
       exportDir,
       dataHome: "/tmp/recovery-data",
+      onEvent: (event) => events.push(event),
       async runCli(args) {
         if (args[0] === "import") imports.push(JSON.parse(await readFile(args[1], "utf8")))
       },
     })
     assert.deepEqual(result, { imported: 1, stagedRecovered: 1, stagedIgnored: 0 })
+    assert.deepEqual(events[1], {
+      event: "restore.session",
+      sessionId: id,
+      blobCandidate: true,
+      stagedCandidate: true,
+      stage: "present",
+      source: "staged",
+      import: "ok",
+    })
     assert.equal(imports[0].messages[0].parts[0].text, "recovered in-progress turn")
     const persisted = JSON.parse((await container.getBlockBlobClient(`sessions/${id}.json`).downloadToBuffer()).toString())
     assert.equal(persisted.messages[0].parts[0].text, "recovered in-progress turn")

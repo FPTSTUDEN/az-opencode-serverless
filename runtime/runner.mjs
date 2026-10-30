@@ -69,8 +69,14 @@ async function start() {
         legacyDataHome,
         databaseExists: existsSync(legacyDatabase),
         exportDir,
+        onEvent: (event) => log(JSON.stringify({ phase: "legacy-migration", ...event })),
       })
-      restored = await restoreSessions(sessionsContainer, { runCli, dataHome, exportDir })
+      restored = await restoreSessions(sessionsContainer, {
+        runCli,
+        dataHome,
+        exportDir,
+        onEvent: (event) => log(JSON.stringify({ phase: "restore", ...event })),
+      })
       break
     } catch (error) {
       if (attempt === BOOTSTRAP_ATTEMPTS) throw error
@@ -90,7 +96,12 @@ async function start() {
   let activeBackup
   const backup = async (kind) => {
     if (activeBackup) return activeBackup
-    activeBackup = backupSessions(sessionsContainer, { runCli, dataHome, exportDir })
+    activeBackup = backupSessions(sessionsContainer, {
+      runCli,
+      dataHome,
+      exportDir,
+      onEvent: (event) => log(JSON.stringify({ phase: kind, ...event })),
+    })
       .then((result) => {
         log(`${kind} backup: ${result.staged} staged at ${exportDir}, ${result.uploaded} uploaded, ${result.unchanged} unchanged, ${result.stale} stale skipped, ${result.conflicts} concurrent conflicts skipped, ${result.failures.length} failed`)
         for (const id of result.conflictIds) log(`session ${id} conflict snapshot preserved at ${exportDir}/${id}.json`)
