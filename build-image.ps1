@@ -15,10 +15,23 @@ if (-not $RegistryName) {
 }
 
 if (-not $Tag) {
-    $dockerfileHash = (Get-FileHash (Join-Path $root "Dockerfile") -Algorithm SHA256).Hash
-    $configHash = (Get-FileHash (Join-Path $root "opencode.json") -Algorithm SHA256).Hash
-    $startupScriptHash = (Get-FileHash (Join-Path $root "start-opencode") -Algorithm SHA256).Hash
-    $combined = [System.Text.Encoding]::UTF8.GetBytes($dockerfileHash + $configHash + $startupScriptHash)
+    $imageInputs = @(
+        ".dockerignore",
+        "Dockerfile",
+        "start-opencode",
+        "runtime/package.json",
+        "runtime/package-lock.json",
+        "runtime/aca-identity.mjs",
+        "runtime/blob-client.mjs",
+        "runtime/config-sync.mjs",
+        "runtime/session-sync.mjs",
+        "runtime/runner.mjs"
+    )
+    $inputHashes = foreach ($path in $imageInputs) {
+        $fileHash = (Get-FileHash (Join-Path $root $path) -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$path`:$fileHash"
+    }
+    $combined = [System.Text.Encoding]::UTF8.GetBytes($inputHashes -join "`n")
     $combinedHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($combined)
     $tagHash = ([System.BitConverter]::ToString($combinedHash) -replace "-", "").Substring(0, 12).ToLowerInvariant()
     $Tag = "opencode:$tagHash"

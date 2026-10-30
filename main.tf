@@ -11,7 +11,9 @@ provider "azurerm" {
 data "azurerm_client_config" "current" {}
 
 locals {
-  name = "${var.resource_prefix}${substr(md5(data.azurerm_client_config.current.subscription_id), 0, 6)}"
+  name                       = "${var.resource_prefix}${substr(md5(data.azurerm_client_config.current.subscription_id), 0, 6)}"
+  opencode_config_container  = "opencode-config"
+  opencode_session_container = "opencode-sessions"
 }
 
 resource "azurerm_resource_group" "rg" {
@@ -33,12 +35,56 @@ resource "azurerm_storage_account" "sa" {
   location                 = azurerm_resource_group.rg.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
+
+  blob_properties {
+    versioning_enabled = true
+
+    delete_retention_policy {
+      days = 7
+    }
+
+    container_delete_retention_policy {
+      days = 7
+    }
+  }
 }
 
 resource "azurerm_storage_share" "workspace" {
   name               = "workspace"
   storage_account_id = azurerm_storage_account.sa.id
   quota              = 50
+}
+
+resource "azurerm_storage_container" "opencode_config" {
+  name                  = local.opencode_config_container
+  storage_account_id    = azurerm_storage_account.sa.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "opencode_sessions" {
+  name                  = local.opencode_session_container
+  storage_account_id    = azurerm_storage_account.sa.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_management_policy" "opencode_session_versions" {
+  storage_account_id = azurerm_storage_account.sa.id
+
+  rule {
+    name    = "expire-opencode-session-versions"
+    enabled = true
+
+    filters {
+      prefix_match = ["${azurerm_storage_container.opencode_sessions.name}/sessions/"]
+      blob_types   = ["blockBlob"]
+    }
+
+    actions {
+      version {
+        delete_after_days_since_creation = 30
+      }
+    }
+  }
 }
 
 data "azurerm_container_app_environment" "shared" {
@@ -122,6 +168,24 @@ resource "azurerm_role_assignment" "acr_pull" {
   principal_id         = azurerm_user_assigned_identity.app.principal_id
 }
 
+resource "azurerm_role_assignment" "opencode_config_reader" {
+  scope                = azurerm_storage_container.opencode_config.id
+  role_definition_name = "Storage Blob Data Reader"
+  principal_id         = azurerm_user_assigned_identity.app.principal_id
+}
+
+resource "azurerm_role_assignment" "opencode_config_publisher" {
+  scope                = azurerm_storage_container.opencode_config.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+resource "azurerm_role_assignment" "opencode_sessions_contributor" {
+  scope                = azurerm_storage_container.opencode_sessions.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.app.principal_id
+}
+
 resource "azurerm_container_app" "opencode" {
   name                         = "opencode"
   resource_group_name          = azurerm_resource_group.rg.name
@@ -129,7 +193,12 @@ resource "azurerm_container_app" "opencode" {
   revision_mode                = "Single"
   workload_profile_name        = "Consumption"
 
-  depends_on = [azurerm_role_assignment.acr_pull, azurerm_container_app_environment_storage.workspace]
+  depends_on = [
+    azurerm_role_assignment.acr_pull,
+    azurerm_role_assignment.opencode_config_reader,
+    azurerm_role_assignment.opencode_sessions_contributor,
+    azurerm_container_app_environment_storage.workspace,
+  ]
 
   identity {
     type         = "UserAssigned"
@@ -171,8 +240,8 @@ resource "azurerm_container_app" "opencode" {
     container {
       name   = "opencode"
       image  = "${azurerm_container_registry.acr.login_server}/opencode:${var.image_tag}"
-      cpu    = 0.5
-      memory = "1Gi"
+      cpu    = 1
+      memory = "2Gi"
 
       env {
         name        = "AZURE_API_KEY"
@@ -187,6 +256,22 @@ resource "azurerm_container_app" "opencode" {
         secret_name = "gh-token"
       }
       env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.app.client_id
+      }
+      env {
+        name  = "OPENCODE_STORAGE_ACCOUNT"
+        value = azurerm_storage_account.sa.name
+      }
+      env {
+        name  = "OPENCODE_CONFIG_CONTAINER"
+        value = azurerm_storage_container.opencode_config.name
+      }
+      env {
+        name  = "OPENCODE_SESSION_CONTAINER"
+        value = azurerm_storage_container.opencode_sessions.name
+      }
+      env {
         name        = "OPENCODE_SERVER_PASSWORD"
         secret_name = "ui-pass"
       }
@@ -198,9 +283,10 @@ resource "azurerm_container_app" "opencode" {
     }
 
     volume {
-      name         = "workspace"
-      storage_name = azurerm_container_app_environment_storage.workspace.name
-      storage_type = "AzureFile"
+      name          = "workspace"
+      storage_name  = azurerm_container_app_environment_storage.workspace.name
+      storage_type  = "AzureFile"
+      mount_options = "mfsymlinks"
     }
   }
 }

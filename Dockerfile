@@ -13,12 +13,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 RUN git config --system url."https://github.com/".insteadOf "git@github.com:" \
     && git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+# OpenCode, Cloudflare Wrangler, and Playwright CLI/test runner.
+RUN npm i -g opencode-ai@1.19.4 wrangler @playwright/test \
+    && npx playwright install --with-deps chromium
+COPY runtime/package.json runtime/package-lock.json /opt/opencode-runtime/
+RUN npm ci --prefix /opt/opencode-runtime --omit=dev
+COPY runtime/aca-identity.mjs runtime/blob-client.mjs runtime/config-sync.mjs runtime/session-sync.mjs runtime/runner.mjs /opt/opencode-runtime/
 COPY start-opencode /usr/local/bin/start-opencode
 RUN chmod 0755 /usr/local/bin/start-opencode
-# OpenCode, Cloudflare Wrangler, and Playwright CLI/test runner.
-RUN npm i -g opencode-ai wrangler @playwright/test \
-    && npx playwright install --with-deps chromium
-COPY opencode.json /root/.config/opencode/opencode.json
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/start-opencode"]
 CMD ["opencode", "web", "--hostname", "0.0.0.0", "--port", "4096"]

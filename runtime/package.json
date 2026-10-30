@@ -1,0 +1,14 @@
+{
+  "name": "opencode-runtime-support",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@azure/storage-blob": "12.34.0"
+  }
+}
