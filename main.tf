@@ -283,9 +283,10 @@ resource "azurerm_container_app" "opencode" {
     }
 
     volume {
-      name         = "workspace"
-      storage_name = azurerm_container_app_environment_storage.workspace.name
-      storage_type = "AzureFile"
+      name          = "workspace"
+      storage_name  = azurerm_container_app_environment_storage.workspace.name
+      storage_type  = "AzureFile"
+      mount_options = "mfsymlinks"
     }
   }
 }
