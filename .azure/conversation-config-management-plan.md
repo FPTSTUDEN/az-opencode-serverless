@@ -1,15 +1,16 @@
 # Conversation persistence and runtime configuration plan
 
 **Tracking issue:** [#2 — Persist OpenCode conversations and externalize runtime configuration](https://github.com/FPTSTUDEN/az-opencode-serverless/issues/2)  
-**Status:** Deployed to the current Azure instance on 2026-10-29. Revision `opencode--0000010` is healthy with the supplied session restored; the periodic backup/restore rollout drill remains pending.
+**Status:** Export staging deployed to the current Azure instance on 2026-10-30. Revision `opencode--0000012` is healthy; the current conflicting session snapshot is staged on the workspace share. Periodic backup/restore rollout drills remain pending.
 
 ## Current instance deployment
 
-- Built and deployed image `oh77b363acr.azurecr.io/opencode:f81c509c1397` to Container Apps revision `opencode--0000010`.
+- Built and deployed image `oh77b363acr.azurecr.io/opencode:816ac50204ee` to Container Apps revision `opencode--0000012` with the approved 1 vCPU / 2 GiB sizing.
 - Published config version `2299ff0424e49756ae2fef13c1fda4e704dddccd2fd3d89d9ce3c24645c4d26b` to the private config container and stored the supplied session export in the private session container.
 - Initial startup confirmed the Azure Files SQLite lock: `opencode session list` against the legacy share failed with `database is locked`. The legacy DB file was 0 bytes. Because the user supplied an export, a migration-complete marker was recorded to skip that SMB database and restore the supplied export instead.
 - Revision `opencode--0000010` reported `Healthy`; runtime logs confirmed config loaded and one session restored. Terraform plan now reports no changes and zero destroys. The existing `.opencode-smb-test` share directory was preserved and removed from Terraform state rather than deleted.
 - The publisher role is scoped to the private config container for the Terraform caller; the app identity has only its documented config-read and session-contributor roles.
+- Verified the new runtime against the live Azure Files mount: a periodic export was staged at `.opencode-exports/ses_e8445334dffecycCbZ0SSK3cxL.json` (55,739 bytes) before the Blob conflict was skipped. The log reported the staging path. The app revision was healthy after deployment.
 - Verified config update/rollback against the running instance. Publishing local config hash `594ac51837eff6d8ed1bc1d9be29ba0d23092794f69bb869966b501b52c9eec5` exposed the added `gpt-61` / `gpt-6.1-sol` alias through the live `/config` API after restart. Republishing the saved prior artifact `2299ff0424e49756ae2fef13c1fda4e704dddccd2fd3d89d9ce3c24645c4d26b` and restarting returned `/config` to only `gpt-5`; Blob `current.json` points back to that original version.
 
 ## Implementation progress
@@ -17,9 +18,9 @@
 - Terraform provisions private `opencode-config` and `opencode-sessions` Blob containers, grants the app identity reader access to config plus contributor access to session exports, grants the Terraform caller config-container-only publish access, enables Blob versioning with 7-day soft-delete retention, and deletes noncurrent session blob versions after 30 days.
 - `publish-config.ps1` checks JSON syntax and top-level object shape, publishes `opencode.json` as an immutable SHA-256-addressed artifact, promotes it with a small `current.json` pointer, and can restart the latest revision. OpenCode performs its own config parsing at startup. `deploy.ps1` invokes the publisher after Terraform; config-only updates do not rebuild the image or apply Terraform.
 - The startup runner downloads and hash-verifies config, migrates an existing legacy share database once if found, imports session snapshots, then starts OpenCode with the live database under `/tmp`.
-- The runner targets a 60-second export interval, uses ETag-conditional Blob updates and snapshot timestamp/message-tail checks to avoid replacing a newer transcript with a stale overlapping-revision snapshot, and skips ambiguous equal-timestamp divergent exports rather than selecting one arbitrarily. It attempts a final export after OpenCode exits. Export failures are logged by session ID without transcript contents.
+- The runner targets a 60-second export interval. Each complete CLI export is atomically staged as the latest per-session JSON file on the Azure Files workspace mount at `.opencode-exports/<session-id>.json` before Blob conflict checks/upload. If Blob skips an ambiguous conflict, the staged candidate remains on the mount for inspection/recovery. These snapshots may capture an unfinished turn; files are sensitive, overwrite per-session, and are readable to workspace-share users. Blob updates still use ETags and timestamp/message-tail checks to avoid overwriting a newer transcript. A final export is attempted after OpenCode exits.
 - The selected periodic policy is best effort: recovery lag includes export duration, and an abrupt stop can lose changes since the last completed export. This is not a zero-loss handoff guarantee.
-- Local runtime unit tests (12), PowerShell parsing, Terraform validation, production dependency audit (0 vulnerabilities), and a Docker image smoke test passed. No Terraform apply or Azure Blob upload has been performed as part of this implementation.
+- Local runtime unit tests, PowerShell parsing, Terraform validation, production dependency audit, and Docker image smoke tests passed. Deployment history and Azure validation are recorded above.
 
 ## Phase 1 validation notes
 

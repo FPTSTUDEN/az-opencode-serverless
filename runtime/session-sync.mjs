@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
@@ -69,6 +69,19 @@ async function getExistingProperties(blob) {
   }
 }
 
+async function stageSessionExport(exportDir, session, content) {
+  const target = path.join(exportDir, `${session.info.id}.json`)
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`
+  await mkdir(exportDir, { recursive: true })
+  try {
+    await writeFile(temporary, content, { mode: 0o600, flag: "wx" })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+  return target
+}
+
 async function storeSession(containerClient, session) {
   const content = Buffer.from(JSON.stringify(session), "utf8")
   const incoming = snapshotMetadata(session, content)
@@ -95,14 +108,17 @@ async function storeSession(containerClient, session) {
   }
 }
 
-export async function backupSessions(containerClient, { runCli, dataHome = process.env.XDG_DATA_HOME } = {}) {
+export async function backupSessions(
+  containerClient,
+  { runCli, dataHome = process.env.XDG_DATA_HOME, exportDir } = {},
+) {
   if (typeof runCli !== "function") throw new Error("backupSessions requires a CLI runner")
   const env = { ...process.env, ...(dataHome ? { XDG_DATA_HOME: dataHome } : {}) }
   const listOutput = await runCli(["session", "list", "--format", "json"], { env })
   const listed = listOutput.trim() ? parseJson(listOutput, "Session list") : []
   if (!Array.isArray(listed)) throw new Error("OpenCode session list was not an array")
 
-  const result = { total: listed.length, uploaded: 0, unchanged: 0, stale: 0, conflicts: 0, failures: [] }
+  const result = { total: listed.length, uploaded: 0, unchanged: 0, stale: 0, conflicts: 0, staged: 0, conflictIds: [], failures: [] }
   for (const item of listed) {
     const id = item?.id
     if (typeof id !== "string" || !/^ses[A-Za-z0-9_-]+$/.test(id)) {
@@ -113,9 +129,15 @@ export async function backupSessions(containerClient, { runCli, dataHome = proce
     try {
       const raw = await runCli(["export", id], { env })
       const session = parseSessionExport(raw, id)
+      const content = Buffer.from(JSON.stringify(session), "utf8")
+      if (exportDir) {
+        await stageSessionExport(exportDir, session, content)
+        result.staged++
+      }
       const outcome = await storeSession(containerClient, session)
       const key = outcome === "conflict" ? "conflicts" : outcome
       result[key]++
+      if (outcome === "conflict") result.conflictIds.push(id)
     } catch (error) {
       result.failures.push({ id, message: error.message })
     }
@@ -150,13 +172,16 @@ export async function restoreSessions(containerClient, { runCli, dataHome = proc
   return imported
 }
 
-export async function migrateLegacySessions(containerClient, { runCli, legacyDataHome, databaseExists } = {}) {
+export async function migrateLegacySessions(
+  containerClient,
+  { runCli, legacyDataHome, databaseExists, exportDir } = {},
+) {
   if (!legacyDataHome || typeof runCli !== "function") throw new Error("Legacy migration requires a data path and CLI runner")
   const marker = containerClient.getBlockBlobClient("control/legacy-migration-complete.json")
   if (await marker.exists()) return { migrated: false, reason: "already-complete" }
   if (!databaseExists) return { migrated: false, reason: "no-legacy-database" }
 
-  const result = await backupSessions(containerClient, { runCli, dataHome: legacyDataHome })
+  const result = await backupSessions(containerClient, { runCli, dataHome: legacyDataHome, exportDir })
   if (result.failures.length || result.conflicts) {
     throw new Error(
       `Legacy conversation export had ${result.failures.length} failure(s) and ${result.conflicts} ambiguous conflict(s); startup blocked`,

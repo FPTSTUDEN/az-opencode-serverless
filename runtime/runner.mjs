@@ -16,6 +16,7 @@ const BOOTSTRAP_ATTEMPTS = 8
 const dataHome = path.join(os.tmpdir(), "opencode-data")
 const configPath = path.join(os.tmpdir(), "opencode-config", "opencode.json")
 const legacyDataHome = "/workspace/.opencode-data"
+const exportDir = "/workspace/.opencode-exports"
 
 function required(name) {
   const value = process.env[name]
@@ -67,6 +68,7 @@ async function start() {
         runCli,
         legacyDataHome,
         databaseExists: existsSync(legacyDatabase),
+        exportDir,
       })
       restored = await restoreSessions(sessionsContainer, { runCli, dataHome })
       break
@@ -88,9 +90,10 @@ async function start() {
   let activeBackup
   const backup = async (kind) => {
     if (activeBackup) return activeBackup
-    activeBackup = backupSessions(sessionsContainer, { runCli, dataHome })
+    activeBackup = backupSessions(sessionsContainer, { runCli, dataHome, exportDir })
       .then((result) => {
-        log(`${kind} backup: ${result.uploaded} uploaded, ${result.unchanged} unchanged, ${result.stale} stale skipped, ${result.conflicts} concurrent conflicts skipped, ${result.failures.length} failed`)
+        log(`${kind} backup: ${result.staged} staged at ${exportDir}, ${result.uploaded} uploaded, ${result.unchanged} unchanged, ${result.stale} stale skipped, ${result.conflicts} concurrent conflicts skipped, ${result.failures.length} failed`)
+        for (const id of result.conflictIds) log(`session ${id} conflict snapshot preserved at ${exportDir}/${id}.json`)
         for (const failure of result.failures) log(`session ${failure.id} export failed: ${failure.message}`)
       })
       .catch((error) => log(`${kind} backup failed: ${error.message}`))

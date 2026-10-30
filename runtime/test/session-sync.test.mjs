@@ -29,7 +29,7 @@ test("backup stores new exports and refuses to overwrite a newer session", async
   const current = { value: session(sessionId, { updated: 20, messages: [{ info: { id: "msg1" } }] }) }
   const cli = cliFor(current)
   const first = await backupSessions(container, { runCli: cli.runCli, dataHome: "/tmp/test-data" })
-  assert.deepEqual(first, { total: 1, uploaded: 1, unchanged: 0, stale: 0, conflicts: 0, failures: [] })
+  assert.deepEqual(first, { total: 1, uploaded: 1, unchanged: 0, stale: 0, conflicts: 0, staged: 0, conflictIds: [], failures: [] })
 
   const repeated = await backupSessions(container, { runCli: cli.runCli, dataHome: "/tmp/test-data" })
   assert.equal(repeated.unchanged, 1)
@@ -63,6 +63,31 @@ test("backup refuses a newer-looking snapshot that omits the current transcript 
   assert.deepEqual(stored.messages.map((message) => message.info.id), ["msg1", "msg2"])
 })
 
+test("backup stages the latest conflicting export on the mounted share", async () => {
+  const container = new MemoryContainer()
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "opencode-export-stage-test-"))
+  const current = { value: session(sessionId, { updated: 20, messages: [{ info: { id: "msg1" }, parts: [{ text: "old" }] }] }) }
+  const cli = cliFor(current)
+  const options = { runCli: cli.runCli, dataHome: "/tmp/test-data", exportDir: tempDir }
+  try {
+    await backupSessions(container, options)
+    current.value = session(sessionId, {
+      updated: 20,
+      messages: [{ info: { id: "msg1" }, parts: [{ text: "in-progress reply" }] }],
+    })
+    const result = await backupSessions(container, options)
+    assert.equal(result.staged, 1)
+    assert.equal(result.conflicts, 1)
+    assert.deepEqual(result.conflictIds, [sessionId])
+
+    const stagedPath = path.join(tempDir, `${sessionId}.json`)
+    const staged = JSON.parse(await readFile(stagedPath, "utf8"))
+    assert.equal(staged.messages[0].parts[0].text, "in-progress reply")
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
 test("backup skips divergent snapshots with the same timestamp and message tail", async () => {
   const container = new MemoryContainer()
   const current = {
@@ -92,7 +117,7 @@ test("backup treats the CLI's empty session output as an empty collection", asyn
       return ""
     },
   })
-  assert.deepEqual(result, { total: 0, uploaded: 0, unchanged: 0, stale: 0, conflicts: 0, failures: [] })
+  assert.deepEqual(result, { total: 0, uploaded: 0, unchanged: 0, stale: 0, conflicts: 0, staged: 0, conflictIds: [], failures: [] })
 })
 
 test("restore imports valid sessions from private snapshots and ignores control blobs", async () => {
