@@ -70,7 +70,7 @@ async function start() {
         databaseExists: existsSync(legacyDatabase),
         exportDir,
       })
-      restored = await restoreSessions(sessionsContainer, { runCli, dataHome })
+      restored = await restoreSessions(sessionsContainer, { runCli, dataHome, exportDir })
       break
     } catch (error) {
       if (attempt === BOOTSTRAP_ATTEMPTS) throw error
@@ -81,7 +81,7 @@ async function start() {
   }
   log(`loaded config version ${configVersion}`)
   if (migration.migrated) log(`migrated ${migration.sessions} legacy session(s) to Blob Storage`)
-  log(`restored ${restored} session(s)`)
+  log(`restored ${restored.imported} session(s); recovered ${restored.stagedRecovered} from staged exports; ignored ${restored.stagedIgnored} invalid staged export(s)`)
 
   const [command, ...args] = process.argv.slice(2)
   if (!command) throw new Error("No OpenCode server command was provided")

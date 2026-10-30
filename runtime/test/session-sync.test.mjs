@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -130,16 +130,79 @@ test("restore imports valid sessions from private snapshots and ignores control 
   try {
     const count = await restoreSessions(container, {
       dataHome: tempHome,
+      exportDir: path.join(tempHome, "exports"),
       async runCli(args, { env }) {
         assert.equal(env.XDG_DATA_HOME, tempHome)
         if (args[0] === "import") imports.push(JSON.parse(await readFile(args[1], "utf8")))
       },
     })
-    assert.equal(count, 1)
+    assert.deepEqual(count, { imported: 1, stagedRecovered: 0, stagedIgnored: 0 })
     assert.equal(imports[0].info.id, sessionId)
     assert.equal(imports[0].messages.length, 1)
   } finally {
     await rm(tempHome, { recursive: true, force: true })
+  }
+})
+
+test("restore prefers and promotes a staged conflict snapshot before importing", async () => {
+  const container = new MemoryContainer()
+  const id = sessionId
+  const blobSession = session(id, { updated: 20, messages: [{ info: { id: "msg1" }, parts: [{ text: "old" }] }] })
+  container.blobs.set(`sessions/${id}.json`, {
+    content: Buffer.from(JSON.stringify(blobSession)),
+    metadata: { updatedat: "20", messagecount: "1", tailids: "msg1", sha256: "old-hash" },
+    etag: "etag-blob",
+  })
+  const stagedSession = session(id, {
+    updated: 20,
+    messages: [{ info: { id: "msg1" }, parts: [{ text: "recovered in-progress turn" }] }],
+  })
+  const stagedContent = Buffer.from(JSON.stringify(stagedSession))
+  const exportDir = await mkdtemp(path.join(os.tmpdir(), "opencode-staged-recovery-test-"))
+  await writeFile(path.join(exportDir, `${id}.json`), stagedContent)
+  const imports = []
+  try {
+    const result = await restoreSessions(container, {
+      exportDir,
+      dataHome: "/tmp/recovery-data",
+      async runCli(args) {
+        if (args[0] === "import") imports.push(JSON.parse(await readFile(args[1], "utf8")))
+      },
+    })
+    assert.deepEqual(result, { imported: 1, stagedRecovered: 1, stagedIgnored: 0 })
+    assert.equal(imports[0].messages[0].parts[0].text, "recovered in-progress turn")
+    const persisted = JSON.parse((await container.getBlockBlobClient(`sessions/${id}.json`).downloadToBuffer()).toString())
+    assert.equal(persisted.messages[0].parts[0].text, "recovered in-progress turn")
+    assert.equal((await readFile(path.join(exportDir, `${id}.json`))).toString(), stagedContent.toString())
+  } finally {
+    await rm(exportDir, { recursive: true, force: true })
+  }
+})
+
+test("restore keeps the newer Blob snapshot when staged data is stale", async () => {
+  const container = new MemoryContainer()
+  const id = sessionId
+  const blobSession = session(id, { updated: 30, messages: [{ info: { id: "msg1" } }, { info: { id: "msg2" } }] })
+  const blobContent = Buffer.from(JSON.stringify(blobSession))
+  container.blobs.set(`sessions/${id}.json`, {
+    content: blobContent,
+    metadata: { updatedat: "30", messagecount: "2", tailids: "msg1,msg2", sha256: "newer-hash" },
+    etag: "etag-newer",
+  })
+  const exportDir = await mkdtemp(path.join(os.tmpdir(), "opencode-stale-stage-test-"))
+  await writeFile(path.join(exportDir, `${id}.json`), JSON.stringify(session(id, { updated: 20, messages: [{ info: { id: "msg1" } }] })))
+  const imports = []
+  try {
+    const result = await restoreSessions(container, {
+      exportDir,
+      async runCli(args) {
+        if (args[0] === "import") imports.push(JSON.parse(await readFile(args[1], "utf8")))
+      },
+    })
+    assert.deepEqual(result, { imported: 1, stagedRecovered: 0, stagedIgnored: 0 })
+    assert.equal(imports[0].messages.length, 2)
+  } finally {
+    await rm(exportDir, { recursive: true, force: true })
   }
 })
 

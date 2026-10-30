@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
@@ -8,6 +8,11 @@ const MAX_UPLOAD_ATTEMPTS = 5
 
 function sessionIdFromBlobName(name) {
   const match = /^sessions\/(ses[A-Za-z0-9_-]+)\.json$/.exec(name)
+  return match?.[1]
+}
+
+function sessionIdFromStageName(name) {
+  const match = /^(ses[A-Za-z0-9_-]+)\.json$/.exec(name)
   return match?.[1]
 }
 
@@ -82,6 +87,63 @@ async function stageSessionExport(exportDir, session, content) {
   return target
 }
 
+async function resolveSessionSnapshot(blob, sessionId, stagedPath) {
+  for (let attempt = 0; attempt < MAX_UPLOAD_ATTEMPTS; attempt++) {
+    let staged
+    try {
+      if (!stagedPath) throw Object.assign(new Error("No staged export"), { code: "ENOENT" })
+      const content = await readFile(stagedPath)
+      staged = {
+        content,
+        session: parseSessionExport(content.toString("utf8"), sessionId),
+      }
+      staged.metadata = snapshotMetadata(staged.session, content)
+    } catch (error) {
+      if (error.code === "ENOENT") staged = undefined
+      else throw error
+    }
+
+    const existing = await getExistingProperties(blob)
+    if (!existing) {
+      if (!staged) return undefined
+      try {
+        await blob.uploadData(staged.content, {
+          blobHTTPHeaders: { blobContentType: "application/json; charset=utf-8" },
+          conditions: { ifNoneMatch: "*" },
+          metadata: staged.metadata,
+        })
+        return { session: staged.session, stagedRecovered: true }
+      } catch (error) {
+        if (statusCode(error) !== 412 || attempt === MAX_UPLOAD_ATTEMPTS - 1) throw error
+        continue
+      }
+    }
+
+    const blobContent = await blob.downloadToBuffer()
+    const blobSession = parseSessionExport(blobContent.toString("utf8"), sessionId)
+    if (!staged) return { session: blobSession, stagedRecovered: false }
+
+    const disposition = snapshotDisposition(snapshotMetadata(blobSession, blobContent), staged.metadata, staged.session)
+    if (disposition === "stale" || disposition === "unchanged") {
+      return { session: blobSession, stagedRecovered: false }
+    }
+
+    const latestStagedContent = await readFile(stagedPath)
+    if (!latestStagedContent.equals(staged.content)) continue
+
+    try {
+      await blob.uploadData(staged.content, {
+        blobHTTPHeaders: { blobContentType: "application/json; charset=utf-8" },
+        conditions: { ifMatch: existing.etag },
+        metadata: staged.metadata,
+      })
+      return { session: staged.session, stagedRecovered: true }
+    } catch (error) {
+      if (statusCode(error) !== 412 || attempt === MAX_UPLOAD_ATTEMPTS - 1) throw error
+    }
+  }
+}
+
 async function storeSession(containerClient, session) {
   const content = Buffer.from(JSON.stringify(session), "utf8")
   const incoming = snapshotMetadata(session, content)
@@ -145,31 +207,55 @@ export async function backupSessions(
   return result
 }
 
-export async function restoreSessions(containerClient, { runCli, dataHome = process.env.XDG_DATA_HOME } = {}) {
+export async function restoreSessions(
+  containerClient,
+  { runCli, dataHome = process.env.XDG_DATA_HOME, exportDir } = {},
+) {
   if (typeof runCli !== "function") throw new Error("restoreSessions requires a CLI runner")
-  const names = []
+  if (!exportDir) throw new Error("restoreSessions requires the mounted export staging directory")
+
+  const sessionIds = new Set()
   for await (const item of containerClient.listBlobsFlat({ prefix: SESSION_PREFIX })) {
-    if (sessionIdFromBlobName(item.name)) names.push(item.name)
+    const id = sessionIdFromBlobName(item.name)
+    if (id) sessionIds.add(id)
   }
-  names.sort()
+  try {
+    for (const name of await readdir(exportDir)) {
+      const id = sessionIdFromStageName(name)
+      if (id) sessionIds.add(id)
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error
+  }
 
   const env = { ...process.env, ...(dataHome ? { XDG_DATA_HOME: dataHome } : {}) }
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "opencode-import-"))
   let imported = 0
+  let stagedRecovered = 0
+  let stagedIgnored = 0
   try {
-    for (const name of names) {
-      const expectedId = sessionIdFromBlobName(name)
-      const content = await containerClient.getBlockBlobClient(name).downloadToBuffer()
-      const session = parseSessionExport(content.toString("utf8"), expectedId)
+    for (const expectedId of [...sessionIds].sort()) {
+      const blob = containerClient.getBlockBlobClient(`${SESSION_PREFIX}${expectedId}.json`)
+      let selected
+      try {
+        selected = await resolveSessionSnapshot(blob, expectedId, path.join(exportDir, `${expectedId}.json`))
+      } catch (error) {
+        if (error.code !== "ENOENT" && !/valid JSON|did not match expected session/.test(error.message)) throw error
+        stagedIgnored++
+        selected = await resolveSessionSnapshot(blob, expectedId)
+      }
+      if (!selected) continue
+
       const inputPath = path.join(tempDir, `${expectedId}.json`)
-      await writeFile(inputPath, content, { mode: 0o600 })
+      await writeFile(inputPath, JSON.stringify(selected.session), { mode: 0o600 })
       await runCli(["import", inputPath], { env })
       imported++
+      if (selected.stagedRecovered) stagedRecovered++
     }
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }
-  return imported
+  return { imported, stagedRecovered, stagedIgnored }
 }
 
 export async function migrateLegacySessions(
