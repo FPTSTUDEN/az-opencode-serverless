@@ -7,6 +7,10 @@
         "gpt-5": {
           "name": "GPT-6 Luna",
           "id": "gpt-6-luna"
+        },
+        "gpt-61": {
+          "name": "GPT-6.1 Sol",
+          "id": "gpt-6.1-sol"
         }
       }
     }
