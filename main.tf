@@ -240,8 +240,8 @@ resource "azurerm_container_app" "opencode" {
     container {
       name   = "opencode"
       image  = "${azurerm_container_registry.acr.login_server}/opencode:${var.image_tag}"
-      cpu    = 0.5
-      memory = "1Gi"
+      cpu    = 1
+      memory = "2Gi"
 
       env {
         name        = "AZURE_API_KEY"
