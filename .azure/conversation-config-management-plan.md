@@ -10,6 +10,7 @@
 - Initial startup confirmed the Azure Files SQLite lock: `opencode session list` against the legacy share failed with `database is locked`. The legacy DB file was 0 bytes. Because the user supplied an export, a migration-complete marker was recorded to skip that SMB database and restore the supplied export instead.
 - Revision `opencode--0000010` reported `Healthy`; runtime logs confirmed config loaded and one session restored. Terraform plan now reports no changes and zero destroys. The existing `.opencode-smb-test` share directory was preserved and removed from Terraform state rather than deleted.
 - The publisher role is scoped to the private config container for the Terraform caller; the app identity has only its documented config-read and session-contributor roles.
+- Verified config update/rollback against the running instance. Publishing local config hash `594ac51837eff6d8ed1bc1d9be29ba0d23092794f69bb869966b501b52c9eec5` exposed the added `gpt-61` / `gpt-6.1-sol` alias through the live `/config` API after restart. Republishing the saved prior artifact `2299ff0424e49756ae2fef13c1fda4e704dddccd2fd3d89d9ce3c24645c4d26b` and restarting returned `/config` to only `gpt-5`; Blob `current.json` points back to that original version.
 
 ## Implementation progress
 
